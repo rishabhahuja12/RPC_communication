@@ -4,7 +4,7 @@
 
 ## 1. Final Academic Project Title
 
-**"Design and Implementation of an Enhanced RPC-Based Distributed Task Execution System with Round-Robin Load Balancing, Fault Tolerance, and Real-Time Task Monitoring"**
+**"Design and Implementation of an Enhanced RPC-Based Distributed Task Execution System with Round-Robin Load Balancing, Fault Tolerance, Real-Time Task Monitoring, and Multi-Machine Network Deployment"**
 
 **Short Title (for slides/report cover):**
 *Enhanced RPC-Based Distributed Task Execution System*
@@ -32,10 +32,11 @@ The proposed system follows a **Master–Worker architecture** over XML-RPC (Rem
 | Component | File | Role |
 |-----------|------|------|
 | Master Node | `master.py` | Task scheduler, load balancer, fault detector |
-| Worker Node | `worker.py` | Remote task executor (runs on ports 8001, 8002) |
+| Worker Node | `worker.py` | Remote task executor (runs on separate machines, ports 8001/8002) |
 | Client | `client.py` | User interface for task submission and monitoring |
 | Task Definitions | `tasks.py` | Implementations of add, factorial, reverse |
-| Configuration | `config.py` | Centralized port/host/timeout settings |
+| Configuration | `config.py` | Centralized LAN IP addresses, ports, and timeout settings |
+| Stress Tester | `stress_test.py` | Fires 20 concurrent tasks to test load and round-robin distribution |
 
 ### How It Works
 
@@ -54,6 +55,9 @@ The proposed system follows a **Master–Worker architecture** over XML-RPC (Rem
 - **Real-Time Task Monitoring:** `task_table` dictionary tracks every task through states: `PENDING → RUNNING → COMPLETED / FAILED`.
 - **Concurrent Client Handling:** `ThreadingMixIn` enables the master to serve multiple client connections simultaneously.
 - **Graceful Degradation:** If all workers fail, the system returns a `FAILED` status without crashing.
+- **Multi-Machine Network Deployment:** Workers and master bind to `0.0.0.0`, accepting connections from any machine on the LAN. Worker IPs are configured in `config.py` and the system runs across real physical machines.
+- **Timestamped Logging:** Every log line in master and worker includes `[HH:MM:SS]`, making the 5-second fault detection gap visually measurable during demos.
+- **Stress Testing:** `stress_test.py` submits 20 concurrent tasks using Python threads, displays per-worker task distribution as a bar chart, and measures total execution time.
 
 ---
 
@@ -100,6 +104,7 @@ The proposed system follows a **Master–Worker architecture** over XML-RPC (Rem
 - Implement load balancing across multiple workers
 - Handle worker failures automatically (fault tolerance)
 - Track task status in real time
+- Deploy across **real physical machines** on a LAN network (not just simulation)
 - Keep it lightweight — no external dependencies (pure Python)
 
 ---
@@ -108,14 +113,19 @@ The proposed system follows a **Master–Worker architecture** over XML-RPC (Rem
 
 - Show the architecture diagram:
   ```
-  CLIENT → MASTER → WORKER 1
-                 → WORKER 2
+  [PC3 - Client]──────────────────────────────┐
+                                               │ RPC (port 9000)
+  [PC2 - Worker2: 0.0.0.0:8002] ←──── [PC1 - Master: 0.0.0.0:9000]
+  [PC3 - Worker1: 0.0.0.0:8001] ←──────────────┘ RPC (port 8001/8002)
+
+             All connected on same WiFi/LAN
   ```
 - Explain each component's role in one line:
-  - **Client:** Submits tasks, views results
-  - **Master:** Schedules tasks, balances load, detects failures
-  - **Workers:** Execute tasks, return results
-- Mention: all communication via XML-RPC (Remote Procedure Call)
+  - **Client:** Submits tasks, views results (any machine)
+  - **Master:** Schedules tasks, balances load, detects failures (PC1)
+  - **Workers:** Execute tasks on separate physical machines (PC2, PC3)
+- Key point: servers bind to `0.0.0.0` — accept connections from any machine, not just localhost
+- Worker IPs and master IP configured in `config.py`
 
 ---
 
@@ -154,15 +164,17 @@ The proposed system follows a **Master–Worker architecture** over XML-RPC (Rem
 
 - **Scenario:** Worker1 crashes mid-execution
 - **Detection:** TCP connection timeout (5 seconds) using custom `TimeoutTransport`
-- **Recovery:**
+- **Recovery — visible in timestamped logs:**
   ```
-  → Try Worker1  [fails after 5s]
-  → Try Worker2  [succeeds]
-  → Task COMPLETED
+  [10:35:10] Assigning task 105 to Worker1
+  [10:35:15] Worker1 unreachable. Trying next worker...   ← 5s gap
+  [10:35:15] Assigning task 105 to Worker2
+  [10:35:15] Task 105 → COMPLETED
   ```
+- The **5-second timestamp gap** is the detection latency — not a bug, it's by design
 - Task is **automatically reassigned** — no manual intervention
 - If ALL workers fail → status = `FAILED`, graceful error message
-- **Benefit:** System stays operational even when nodes go down
+- **Known limitation:** Detection is reactive (on assignment), not proactive (no heartbeat)
 
 ---
 
@@ -191,8 +203,9 @@ The proposed system follows a **Master–Worker architecture** over XML-RPC (Rem
 
 - **Demo 1:** Submit `factorial(5)` → result 120 on Worker1
 - **Demo 2:** Submit 4 tasks → show round-robin alternating Worker1/Worker2
-- **Demo 3:** Kill Worker1 → submit task → show 5s pause + reassignment to Worker2
+- **Demo 3:** Kill Worker1 → submit task → point to the **5-second timestamp gap** in master logs → task reassigned to Worker2. Say: *"This gap is the detection latency — the system knew Worker1 failed at exactly this second."*
 - **Demo 4:** Show task table (`View all tasks`) showing COMPLETED/FAILED history
+- **Demo 5:** Run `stress_test.py` → 20 concurrent tasks fire simultaneously → show bar chart with even split across workers (proves concurrent handling and round-robin at scale)
 
 ---
 
@@ -203,6 +216,8 @@ The proposed system follows a **Master–Worker architecture** over XML-RPC (Rem
 - Round-robin load balancing
 - Automatic fault detection and recovery
 - Real-time task status monitoring
+- **Real multi-machine deployment** across physical machines on a LAN
+- **Concurrent stress testing** with visible per-worker distribution
 - Zero external dependencies — pure Python
 
 **Future Scope:**
@@ -238,7 +253,7 @@ We maintain a shared counter `rr_index` initialized to 0. When a task arrives, t
 
 **Q4. How does fault tolerance work? What happens when a worker crashes?**
 
-When the master calls a worker's RPC method, the call goes through a custom `TimeoutTransport` class that sets a 5-second timeout on the TCP connection. If the worker is down or unresponsive, the connection either refuses immediately or times out after 5 seconds, raising an exception. The master's `submit_task` function catches this exception inside a `for` loop that iterates over all workers. On failure, it logs the error and moves to the next worker in the list. If all workers fail, the task is marked `FAILED` with the message "All workers unavailable" and the client receives this gracefully.
+When the master calls a worker's RPC method, the call goes through a custom `TimeoutTransport` class that sets a 5-second timeout on the TCP connection. If the worker is down or unresponsive, the connection either refuses immediately or times out after 5 seconds, raising an exception. The master's `submit_task` function catches this exception inside a `for` loop that iterates over all workers. On failure, it logs the error and moves to the next worker in the list. If all workers fail, the task is marked `FAILED` with the message "All workers unavailable" and the client receives this gracefully. The timestamped logs make this detection gap visible — the timestamp jumps by 5 seconds on the failure line, clearly showing when the detection occurred.
 
 ---
 
@@ -280,9 +295,10 @@ You also add the corresponding input prompt in `client.py`. The master and worke
 Several limitations exist in the current implementation:
 1. **No persistent storage** — task history is lost when the master restarts since `task_table` is in-memory only.
 2. **Static worker list** — workers cannot register or deregister dynamically; adding a worker requires editing `config.py` and restarting the master.
-3. **Synchronous execution** — the master blocks while waiting for a worker to complete; very long tasks will delay other clients even with threading.
-4. **No heartbeat mechanism** — the master only detects worker failure when it tries to assign a task, not proactively in the background.
-5. **No authentication** — any process that knows the master's port can submit tasks.
+3. **Synchronous execution** — the master blocks while waiting for a worker to complete a task; very long tasks delay other clients even with threading.
+4. **Reactive fault detection (no heartbeat)** — the master detects worker failure only when it tries to assign a task, resulting in a visible 5-second detection latency. Proactive detection via background heartbeat pings would reduce this to under 1 second, but is out of scope.
+5. **No authentication** — any machine on the network that knows the master's IP and port can submit tasks, which is a security concern in open networks.
+6. **Manual IP configuration** — all machines must have `config.py` manually updated with LAN IPs; there is no auto-discovery of workers.
 
 ---
 

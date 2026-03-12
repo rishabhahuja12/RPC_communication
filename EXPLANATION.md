@@ -4,10 +4,10 @@
 
 ## What This Project Does
 
-This project simulates a **distributed computing system** where a central machine (master) receives tasks from a user (client) and distributes them to multiple worker machines for execution using **Remote Procedure Calls (RPC)**.
+This project **implements** a **distributed computing system** where a central machine (master) receives tasks from a user (client) and distributes them to multiple worker machines for execution using **Remote Procedure Calls (RPC)**.
 
 **In simple terms:**
-> Instead of one machine doing all the work, the work is split across multiple machines. If one machine breaks down, another takes over. This is how real-world cloud systems like AWS, Google Cloud, and Hadoop work at a fundamental level.
+> Instead of one machine doing all the work, the work is split across multiple machines on a real network. If one machine breaks down, another takes over. This is how real-world cloud systems like AWS, Google Cloud, and Hadoop work at a fundamental level.
 
 ---
 
@@ -49,26 +49,29 @@ Python's built-in `xmlrpc` library handles all the networking (TCP, serializatio
 ## System Architecture
 
 ```
-+------------------+
-|     CLIENT       |   ← You interact here (client.py)
-|  submit_task()   |
-+--------+---------+
-         |
-         | RPC call to master
-         v
-+------------------+
-|     MASTER       |   ← Brain of the system (master.py)
-|  Load Balancer   |   ← Decides which worker gets the task
-|  Task Tracker    |   ← Keeps record of all tasks
-|  Fault Detector  |   ← Detects unresponsive workers
-+----+--------+----+
-     |        |
-     | RPC    | RPC
-     v        v
-+--------+ +--------+
-|WORKER 1| |WORKER 2|   ← Do the actual computation (worker.py)
-|port8001| |port8002|
-+--------+ +--------+
++-----------------------------+
+|  CLIENT (any machine)       |   ← You interact here (client.py)
+|  Connects to MASTER_IP:9000 |
++----------+------------------+
+           |
+           | RPC call over LAN
+           v
++-----------------------------+
+|  MASTER (PC1)               |   ← Brain of the system (master.py)
+|  Binds to 0.0.0.0:9000      |   ← Accepts from any machine
+|  Load Balancer              |   ← Decides which worker gets the task
+|  Task Tracker               |   ← Keeps record of all tasks
+|  Fault Detector             |   ← Detects unresponsive workers
++----+-------------------+----+
+     |                   |
+     | RPC over LAN      | RPC over LAN
+     v                   v
++----------+       +----------+
+| WORKER 1 |       | WORKER 2 |   ← Do the actual computation
+|  (PC2)   |       |  (PC3)   |   ← (worker.py)
+| 0.0.0.0  |       | 0.0.0.0  |
+| :8001    |       | :8002    |
++----------+       +----------+
 ```
 
 ---
@@ -80,19 +83,24 @@ Python's built-in `xmlrpc` library handles all the networking (TCP, serializatio
 ### `config.py` — Configuration
 
 ```python
-WORKERS = [
-    {"id": "Worker1", "host": "localhost", "port": 8001},
-    {"id": "Worker2", "host": "localhost", "port": 8002},
-]
-MASTER_HOST = "localhost"
+# IP of the machine running master.py (used by clients to connect)
+MASTER_IP   = "localhost"       # ← replace with master machine's LAN IP
 MASTER_PORT = 9000
+
+WORKERS = [
+    {"id": "Worker1", "host": "localhost", "port": 8001},  # ← replace with Worker1's LAN IP
+    {"id": "Worker2", "host": "localhost", "port": 8002},  # ← replace with Worker2's LAN IP
+]
 WORKER_TIMEOUT = 5
 ```
 
 **What it does:**
 - Central place to define where workers and master are running
+- `MASTER_IP` is the IP clients use to **connect to** the master — set to the master machine's LAN IP for multi-machine use
+- `WORKERS[x]["host"]` is each worker's LAN IP — the master uses these to **connect to** workers
+- Servers bind to `0.0.0.0` (all interfaces) — IPs here are only for outbound connections
 - `WORKER_TIMEOUT = 5` means: if a worker doesn't reply in 5 seconds, it's considered failed
-- To add a 3rd worker, you'd add `{"id": "Worker3", "host": "localhost", "port": 8003}` here
+- To add a 3rd worker, add `{"id": "Worker3", "host": "<PC4-IP>", "port": 8003}` here
 - No logic — pure configuration
 
 ---
@@ -148,13 +156,21 @@ def execute_task(task_id, task_type, task_data):
 
 **The server part:**
 ```python
-server = SimpleXMLRPCServer(("localhost", port), ...)
+def ts():
+    return datetime.now().strftime("%H:%M:%S")
+
+server = SimpleXMLRPCServer(("0.0.0.0", port), ...)
 server.register_function(execute_task, "execute_task")
-server.serve_forever()
+try:
+    server.serve_forever()
+except KeyboardInterrupt:
+    print(f"\n[{ts()}] [{worker_id}] Shutting down.")
+    server.server_close()
 ```
-- Opens a TCP port
+- `ts()` returns the current time as a string (e.g. `10:35:15`) — prepended to every log line
+- Binds to `0.0.0.0` — listens on **all** network interfaces, accepting connections from any machine on the LAN (not just localhost)
 - Registers `execute_task` as the callable RPC method
-- Loops forever waiting for calls
+- `KeyboardInterrupt` (Ctrl+C) is caught cleanly — prints "Shutting down." and releases the port so it can be restarted immediately
 
 ---
 
@@ -171,6 +187,19 @@ rr_index = [0]        # round-robin pointer: 0=Worker1, 1=Worker2, 0=Worker1...
 
 **Why lists `[100]` instead of plain integers?**
 Python integers are immutable — you can't modify them inside a function with just `=`. Using a single-element list `[0]` lets multiple threads share and update the value safely.
+
+**The `ts()` helper and why timestamps matter:**
+```python
+def ts():
+    return datetime.now().strftime("%H:%M:%S")
+```
+Every log line is prefixed with `[HH:MM:SS]`. When a worker fails, the log shows:
+```
+[10:35:10] Assigning task to Worker1
+[10:35:15] Worker1 unreachable. Trying next worker...   ← 5s gap visible
+[10:35:15] Assigning task to Worker2
+```
+The timestamp jump from `:10` to `:15` makes the detection latency measurable and visible — this is the key demo moment for fault tolerance.
 
 ---
 
@@ -264,13 +293,13 @@ Failure?  → Try Worker2
 **Role:** The user interface. Lets you submit tasks, check status, and view all tasks. Communicates with the master via XML-RPC.
 
 ```python
-master = xmlrpc.client.ServerProxy("http://localhost:9000/", allow_none=True)
+master = xmlrpc.client.ServerProxy(f"http://{MASTER_IP}:{MASTER_PORT}/", allow_none=True)
 result = master.submit_task("factorial", [5])
 ```
 
 This looks like a local function call, but it's actually:
 1. Serializing `("factorial", [5])` to XML
-2. Sending it over TCP to `localhost:9000`
+2. Sending it over TCP to `MASTER_IP:9000`
 3. Master receives it, processes it, sends back XML response
 4. Client deserializes the response back into a Python dict
 
@@ -282,34 +311,60 @@ This looks like a local function call, but it's actually:
 
 ---
 
+### `stress_test.py` — Stress Tester
+
+**Role:** Fires 20 tasks simultaneously from one machine to test the system under concurrent load.
+
+```python
+threads = [threading.Thread(target=submit, args=(i,)) for i in range(NUM_TASKS)]
+for t in threads: t.start()
+for t in threads: t.join()
+```
+
+**How it works:**
+1. Creates 20 threads, each pointing to a different task number
+2. All threads start at almost the same time (`t.start()` in a loop)
+3. Each thread creates its own `ServerProxy` connection to the master and calls `submit_task()`
+4. The master, being threaded (`ThreadingMixIn`), handles all 20 connections simultaneously
+5. Round-robin distributes them: 10 → Worker1, 10 → Worker2
+6. After all threads finish (`t.join()`), prints a summary with per-worker bar chart
+
+**Why a new `ServerProxy` per thread?**
+`ServerProxy` is not thread-safe — sharing one proxy between 20 threads causes race conditions. Each thread gets its own connection.
+
+**Use for overload testing:**
+Kill one worker before running the stress test. All 20 tasks will redirect to the surviving worker, demonstrating fault tolerance under load.
+
+---
+
 ## Data Flow — End to End
 
 Here's what happens when you type `factorial(5)`:
 
 ```
-1. client.py
+1. client.py  (any machine on LAN)
    User picks "1. Submit task", type=factorial, number=5
    Calls: master_proxy.submit_task("factorial", [5])
-   ↓ (XML-RPC over TCP to port 9000)
+   ↓ (XML-RPC over TCP to MASTER_IP:9000)
 
-2. master.py — submit_task()
+2. master.py — submit_task()  (PC1 - master machine)
    Assigns task_id = 101
    Sets task_table[101] = {status: "PENDING", worker: None, result: None}
    Round-robin picks Worker1 (rr_index=0)
    Sets task_table[101]["status"] = "RUNNING"
    Calls: worker_proxy.execute_task(101, "factorial", [5])
-   ↓ (XML-RPC over TCP to port 8001)
+   ↓ (XML-RPC over TCP to Worker1_IP:8001)
 
-3. worker.py — execute_task()
+3. worker.py — execute_task()  (PC2 - Worker1 machine)
    Looks up TASK_HANDLERS["factorial"]
    Calls: factorial([5]) = math.factorial(5) = 120
    Returns: {taskID: 101, status: "COMPLETED", result: 120, workerID: "Worker1"}
-   ↑ (XML-RPC response back to master)
+   ↑ (XML-RPC response back to master over LAN)
 
 4. master.py — back in submit_task()
    Updates task_table[101] = {status: "COMPLETED", worker: "Worker1", result: 120}
    Returns result dict to client
-   ↑ (XML-RPC response back to client)
+   ↑ (XML-RPC response back to client over LAN)
 
 5. client.py
    Receives result dict
@@ -329,6 +384,10 @@ Here's what happens when you type `factorial(5)`:
 | Task Monitoring | `master.py:task_table` | Dict tracking every task's lifecycle |
 | Task States | `master.py` | PENDING → RUNNING → COMPLETED/FAILED |
 | Threading | `master.py:ThreadedXMLRPCServer` | Each client request in its own thread |
+| Multi-Machine Binding | `worker.py` + `master.py` | Bind to `0.0.0.0` — accept from any LAN machine |
+| Network Config | `config.py:MASTER_IP + WORKERS` | LAN IPs for outbound connections |
+| Timestamped Logging | `master.py:ts()` + `worker.py:ts()` | `[HH:MM:SS]` on every log — makes 5s fault detection gap measurable |
+| Stress Testing | `stress_test.py` | 20 threads fire concurrent tasks, shows distribution |
 
 ---
 
@@ -336,11 +395,12 @@ Here's what happens when you type `factorial(5)`:
 
 | File | Reason for Separation |
 |------|----------------------|
-| `config.py` | Change ports/hosts without touching logic |
+| `config.py` | Change IPs/ports without touching logic — only file that differs per machine |
 | `tasks.py` | Add new task types without touching network code |
-| `worker.py` | Run multiple copies independently on different ports |
+| `worker.py` | Run multiple copies independently on different machines and ports |
 | `master.py` | Single central coordinator — never run multiple copies |
-| `client.py` | User-facing — can be run by multiple users simultaneously |
+| `client.py` | User-facing — can be run by multiple users on any machine simultaneously |
+| `stress_test.py` | Standalone load tester — run from any machine, independent of client |
 
 ---
 
@@ -348,12 +408,15 @@ Here's what happens when you type `factorial(5)`:
 
 | Change | What Breaks |
 |--------|------------|
-| Master port in config.py ≠ client connect port | Client can't connect to master |
-| Worker port in config.py ≠ actual `python worker.py` port | Master can't reach that worker |
+| `MASTER_IP` in config.py ≠ master machine's actual IP | Client/stress_test can't connect to master |
+| Worker `"host"` in config.py ≠ worker machine's actual IP | Master can't reach that worker, tasks FAIL |
+| Worker bound to `"localhost"` instead of `"0.0.0.0"` | Only accepts connections from same machine — other machines can't connect |
+| Master bound to `"localhost"` instead of `"0.0.0.0"` | Only clients on the same machine can connect |
 | Task function raises unhandled exception | Worker returns FAILED (caught by try/except) |
 | Both workers down | All tasks return FAILED after 10s total wait |
 | Master down | Client throws ConnectionRefusedError immediately |
-| WORKER_TIMEOUT too low (e.g., 0.1s) | Tasks fail even when workers are running (too fast timeout) |
+| `WORKER_TIMEOUT` too low (e.g., 0.1s) | Tasks fail even when workers are alive (connection too slow on LAN) |
+| Firewall blocking ports 8001/8002/9000 | Remote machines can't connect even if IPs are correct |
 
 ---
 

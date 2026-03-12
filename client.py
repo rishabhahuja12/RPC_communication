@@ -1,10 +1,10 @@
 import xmlrpc.client
-from config import MASTER_HOST, MASTER_PORT
+from config import MASTER_IP, MASTER_PORT
 
 
 def main():
     master = xmlrpc.client.ServerProxy(
-        f"http://{MASTER_HOST}:{MASTER_PORT}/",
+        f"http://{MASTER_IP}:{MASTER_PORT}/",
         allow_none=True,
     )
 

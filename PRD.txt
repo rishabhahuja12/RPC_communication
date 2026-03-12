@@ -1,0 +1,354 @@
+Product Requirements Document (PRD)
+Project Title
+
+Enhanced RPC-Based Distributed Task Execution System with Load Balancing, Fault Tolerance, and Task Monitoring
+
+1. Project Overview
+Purpose
+
+The goal of this project is to design and implement a distributed computing system where computational tasks are executed on remote machines using Remote Procedure Calls (RPC).
+
+The system will simulate how distributed systems divide workloads among multiple worker nodes to improve performance, scalability, and reliability.
+
+The project will also demonstrate core distributed computing concepts such as load balancing, fault tolerance, and task monitoring.
+
+2. Problem Statement
+
+In centralized systems, all computations are executed on a single machine, which can lead to:
+
+High processing load
+
+Slow execution time
+
+Single point of failure
+
+Distributed systems solve this problem by dividing tasks across multiple machines.
+
+This project implements a master–worker architecture, where a master node distributes tasks to worker nodes through RPC communication.
+
+3. System Architecture
+Components
+1. Master Node
+
+Responsible for:
+
+Receiving tasks
+
+Assigning tasks to workers
+
+Monitoring task execution
+
+Handling worker failures
+
+2. Worker Nodes
+
+Responsible for:
+
+Accepting RPC requests
+
+Executing assigned tasks
+
+Returning results to the master
+
+3. RPC Communication Layer
+
+Handles communication between master and workers using remote method calls.
+
+Architecture Diagram (Conceptual)
+        +-------------------+
+        |      CLIENT       |
+        |  Submit Task      |
+        +---------+---------+
+                  |
+                  v
+        +-------------------+
+        |      MASTER       |
+        | Task Scheduler    |
+        | Load Balancer     |
+        | Task Monitor      |
+        +----+-------+------+
+             |       |
+             v       v
+      +-----------+ +-----------+
+      | WORKER 1  | | WORKER 2  |
+      | execute() | | execute() |
+      +-----------+ +-----------+
+             |
+             v
+        Return Result
+4. Key Concepts Demonstrated
+1. Remote Procedure Call (RPC)
+
+RPC allows a program to execute a function on a remote machine as if it were a local function.
+
+Example RPC method:
+
+executeTask(taskID, taskData)
+
+The master calls this method on worker nodes.
+
+2. Load Balancing
+
+Tasks are distributed across multiple worker nodes so that no single node becomes overloaded.
+
+Example strategies:
+
+Round Robin
+
+Least Busy Worker
+
+3. Fault Tolerance
+
+If a worker node fails or does not respond:
+
+The master detects failure
+
+The task is reassigned to another worker
+
+This ensures system reliability.
+
+4. Task Monitoring
+
+Each task in the system has a status.
+
+Possible statuses:
+
+PENDING
+RUNNING
+COMPLETED
+FAILED
+
+The master maintains a task tracking table.
+
+5. Functional Requirements
+Task Submission
+
+The system must allow a user to submit tasks to the master node.
+
+Example tasks:
+
+Addition
+
+Factorial
+
+String processing
+
+Task Assignment
+
+The master must assign tasks to available worker nodes.
+
+The assignment must follow a load balancing strategy.
+
+Remote Execution
+
+Worker nodes must expose an RPC method:
+
+executeTask(taskID, data)
+
+The worker executes the task and returns the result.
+
+Task Status Tracking
+
+The system must track the status of every task.
+
+Example:
+
+Task ID: 101
+Status: RUNNING
+Worker: Worker 2
+Failure Handling
+
+If a worker does not respond:
+
+The master should detect the failure
+
+The task should be reassigned
+
+6. Non-Functional Requirements
+Performance
+
+Tasks should execute faster when multiple workers are used.
+
+Scalability
+
+The system architecture should allow adding more worker nodes.
+
+Reliability
+
+The system must handle worker failures.
+
+Simplicity
+
+Implementation should remain simple enough for a college project.
+
+7. Technology Stack (Suggested)
+Component	Technology
+Programming Language	Python
+RPC Framework	gRPC or XML-RPC
+Communication	TCP
+Execution Environment	Local machine simulation
+
+Worker nodes can run as separate processes.
+
+8. Data Structures
+Task Table
+
+Example structure:
+
+Task ID	Worker	Status	Result
+101	Worker1	RUNNING	—
+102	Worker2	COMPLETED	120
+Worker Status Table
+Worker	Status	Current Tasks
+Worker1	Active	1
+Worker2	Active	0
+9. Core Workflow
+Step 1
+
+User submits task.
+
+Example:
+
+factorial(5)
+Step 2
+
+Master adds task to queue.
+
+Task 101 → PENDING
+Step 3
+
+Master selects worker using load balancing.
+
+Step 4
+
+Master calls RPC on worker.
+
+executeTask(101, factorial(5))
+Step 5
+
+Worker executes the task.
+
+factorial(5) = 120
+Step 6
+
+Worker returns result.
+
+Step 7
+
+Master updates task status.
+
+Task 101 → COMPLETED
+10. Example Task Execution
+
+Input:
+
+Task: factorial(6)
+
+RPC call:
+
+executeTask(201, factorial(6))
+
+Worker result:
+
+720
+
+Master update:
+
+Task 201: COMPLETED
+11. Partial Implementation Plan
+
+The project does not require a full production system.
+
+Minimum implementation:
+
+Master node
+
+Two worker nodes
+
+RPC communication
+
+Task execution
+
+Result return
+
+Basic task monitoring
+
+12. Team Work Division (for 3–4 students)
+Student 1
+
+RPC communication implementation.
+
+Student 2
+
+Master node logic and load balancing.
+
+Student 3
+
+Worker node execution logic.
+
+Student 4 (optional)
+
+Task monitoring and user interface.
+
+13. Testing Plan
+
+Test cases:
+
+Test 1
+
+Single task execution.
+
+Test 2
+
+Multiple tasks distributed among workers.
+
+Test 3
+
+Worker failure simulation.
+
+Test 4
+
+Task status tracking.
+
+14. Expected Output
+
+Example console output:
+
+Task Submitted: factorial(5)
+
+Master assigning task to Worker1
+
+Worker1 executing task...
+
+Result: 120
+
+Task Status: COMPLETED
+15. Applications
+
+Distributed systems similar to this model are used in:
+
+Cloud computing platforms
+
+Data processing systems
+
+Scientific computing
+
+Large scale task processing frameworks
+
+16. Future Scope
+
+Possible improvements:
+
+Dynamic worker scaling
+
+Web interface
+
+Cloud deployment
+
+Advanced scheduling algorithms
+
+17. Conclusion
+
+The proposed system demonstrates how distributed computing systems use RPC communication to distribute tasks across multiple machines.
+
+By incorporating load balancing, fault tolerance, and task monitoring, the system provides a simplified yet realistic model of modern distributed task execution platforms.

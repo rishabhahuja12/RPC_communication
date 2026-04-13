@@ -3,9 +3,9 @@ import xmlrpc.client
 import time
 from config import MASTER_IP, MASTER_PORT
 
-# ── CONFIGURE ──────────────────────
+# -- CONFIGURE ---------------------
 NUM_TASKS = 20   # total tasks to fire simultaneously
-# ───────────────────────────────────
+# -----------------------------------
 
 results = {}
 lock = threading.Lock()
@@ -30,15 +30,16 @@ def submit(task_num):
 
     with lock:
         results[task_num] = result
+        worker_name = str(result['workerID']) if result['workerID'] else "None"
         print(
             f"  Task {result['taskID']:>4} | {task_type:<10} | "
-            f"{str(result['status']):<10} | Worker: {result['workerID']:<10} | Result: {result['result']}"
+            f"{str(result['status']):<10} | Worker: {worker_name:<10} | Result: {result['result']}"
         )
 
 
 def main():
     print("=" * 70)
-    print(f"  STRESS TEST — Firing {NUM_TASKS} tasks simultaneously")
+    print(f"  STRESS TEST -- Firing {NUM_TASKS} tasks simultaneously")
     print(f"  Target master: {MASTER_IP}:{MASTER_PORT}")
     print("=" * 70)
 
@@ -60,7 +61,7 @@ def main():
     failed = sum(1 for r in results.values() if r["status"] == "FAILED")
 
     for r in results.values():
-        w = str(r["workerID"])
+        w = str(r["workerID"]) if r["workerID"] else "None"
         worker_counts[w] = worker_counts.get(w, 0) + 1
 
     print("\n" + "=" * 70)
@@ -70,9 +71,10 @@ def main():
     print(f"  Completed      : {completed}")
     print(f"  Failed         : {failed}")
     print(f"  Time taken     : {elapsed:.2f} seconds")
+    print(f"  Unique workers : {len([w for w in worker_counts if w != 'None'])}")
     print(f"\n  Tasks per worker:")
     for worker, count in sorted(worker_counts.items()):
-        bar = "█" * count
+        bar = "#" * count
         print(f"    {worker:<12} {bar}  ({count} tasks)")
     print("=" * 70)
 

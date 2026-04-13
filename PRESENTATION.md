@@ -4,16 +4,16 @@
 
 ## 1. Final Academic Project Title
 
-**"Design and Implementation of an Enhanced RPC-Based Distributed Task Execution System with Round-Robin Load Balancing, Fault Tolerance, Real-Time Task Monitoring, and Multi-Machine Network Deployment"**
+**"Design and Implementation of an Enhanced RPC-Based Distributed Task Execution System with Service Discovery, Auto-Scaling, Round-Robin Load Balancing, Fault Tolerance, and Real-Time Task Monitoring"**
 
 **Short Title (for slides/report cover):**
-*Enhanced RPC-Based Distributed Task Execution System*
+*Enhanced RPC-Based Distributed Task Execution System with Service Discovery & Auto-Scaling*
 
 ---
 
 ## 2. Problem Statement
 
-In conventional centralized computing systems, all computational tasks are processed by a single machine, which creates critical limitations in performance, reliability, and scalability. As the volume and complexity of tasks increase, a single machine becomes a bottleneck — slowing execution, exhausting resources, and forming a single point of failure where one crash brings down the entire system. Existing distributed frameworks like Apache Hadoop or Google's gRPC ecosystem, while powerful, introduce significant complexity and dependency overhead that is impractical for lightweight deployments or educational demonstrations. This project addresses these limitations by designing a simplified yet realistic distributed task execution system using XML-RPC, where a central master node distributes computational tasks across multiple worker nodes using round-robin load balancing, automatically detects and recovers from worker failures, and maintains a real-time task status tracking table — demonstrating core distributed computing principles within a minimal, dependency-free Python environment.
+In conventional centralized computing systems, all computational tasks are processed by a single machine, which creates critical limitations in performance, reliability, and scalability. As the volume and complexity of tasks increase, a single machine becomes a bottleneck — slowing execution, exhausting resources, and forming a single point of failure where one crash brings down the entire system. Furthermore, existing distributed frameworks require manual configuration of worker IPs, making scaling tedious and error-prone. This project addresses these limitations by designing a distributed task execution system using XML-RPC, where workers register themselves dynamically through a service discovery registry, a central master node distributes tasks using round-robin load balancing, the system automatically scales workers up or down based on demand, detects and recovers from worker failures using heartbeat monitoring and TCP timeouts, and maintains a real-time task status tracking table — demonstrating core distributed computing principles within a minimal, dependency-free Python environment.
 
 ---
 
@@ -21,43 +21,54 @@ In conventional centralized computing systems, all computational tasks are proce
 
 ### Overview
 
-The proposed system follows a **Master–Worker architecture** over XML-RPC (Remote Procedure Call), implemented entirely in Python using its standard library. The system consists of three logical layers:
+The proposed system follows a **Master–Worker architecture** with a **Service Discovery Registry** over XML-RPC (Remote Procedure Call), implemented entirely in Python using its standard library. The system consists of four logical layers:
 
-1. **Client Layer** — The user submits tasks through an interactive command-line interface.
-2. **Master Layer** — A central coordinator that receives tasks, distributes them using round-robin scheduling, tracks their status, and handles failures.
-3. **Worker Layer** — Multiple independent worker processes that listen for RPC calls, execute assigned tasks, and return results.
+1. **Registry Layer** — A service discovery server where workers register themselves and send heartbeats.
+2. **Client Layer** — The user submits tasks through an interactive command-line interface.
+3. **Master Layer** — A central coordinator that discovers workers from the registry, distributes tasks using round-robin scheduling, tracks their status, handles failures, and auto-scales workers.
+4. **Worker Layer** — Multiple independent worker processes that self-register, listen for RPC calls, execute assigned tasks, and return results.
 
 ### Components
 
 | Component | File | Role |
 |-----------|------|------|
-| Master Node | `master.py` | Task scheduler, load balancer, fault detector |
-| Worker Node | `worker.py` | Remote task executor (runs on separate machines, ports 8001/8002) |
-| Client | `client.py` | User interface for task submission and monitoring |
+| Registry | `registry.py` | Service discovery: worker registration, heartbeat monitoring, reaping stale workers |
+| Master Node | `master.py` | Task scheduler, load balancer, fault detector, auto-scaler |
+| Worker Node | `worker.py` | Self-registering remote task executor (any port, any machine) |
+| Client | `client.py` | User interface for task submission, monitoring, and cluster status |
 | Task Definitions | `tasks.py` | Implementations of add, factorial, reverse |
-| Configuration | `config.py` | Centralized LAN IP addresses, ports, and timeout settings |
-| Stress Tester | `stress_test.py` | Fires 20 concurrent tasks to test load and round-robin distribution |
+| Configuration | `config.py` | Centralized settings: registry/master IPs, ports, timeouts, scaling params |
+| Stress Tester | `stress_test.py` | Fires 20 concurrent tasks to test load, discovery, and distribution |
 
 ### How It Works
 
-1. The user submits a task (e.g., `factorial(5)`) through `client.py`.
-2. The client sends an RPC call to the master at port 9000.
-3. The master assigns a unique task ID, records the task as `PENDING`, and selects a worker using round-robin.
-4. The master sends an RPC call (`execute_task(task_id, task_type, task_data)`) to the selected worker.
-5. The worker executes the function, returns a result dict with `status: COMPLETED`.
-6. The master updates the task table to `COMPLETED` and forwards the result to the client.
-7. If the worker is unreachable (timeout after 5 seconds), the master catches the exception and reassigns the task to the next available worker.
+1. The **registry** starts first and listens for worker registrations.
+2. **Workers** start on any port, call `registry.register_worker()`, and begin sending heartbeats every 3 seconds.
+3. The **master** starts and connects to the registry.
+4. The user submits a task (e.g., `factorial(5)`) through `client.py`.
+5. The client sends an RPC call to the master at port 9000.
+6. The master calls `registry.get_workers()` to discover currently available workers.
+7. The master assigns a unique task ID, records the task as `PENDING`, and selects a worker using round-robin.
+8. The master sends an RPC call (`execute_task(task_id, task_type, task_data)`) to the selected worker.
+9. The worker executes the function, returns a result dict with `status: COMPLETED`.
+10. The master updates the task table to `COMPLETED` and forwards the result to the client.
+11. If the worker is unreachable (timeout after 5 seconds), the master reassigns to the next worker.
+12. If no workers are available, the client receives `"Service Unavailable"`.
 
 ### Key Features Implemented
 
-- **Round-Robin Load Balancing:** A shared `rr_index` pointer cycles through workers (0 → 1 → 0 → 1...) ensuring equal task distribution.
+- **Service Discovery:** Workers self-register with the registry — no hardcoded IPs needed. The master discovers workers dynamically at runtime.
+- **Heartbeat Health Monitoring:** Workers send heartbeats every 3s. The registry's reaper thread removes workers that miss heartbeats for 10s, enabling proactive crash detection.
+- **Auto-Scaling:** A background thread in the master monitors pending tasks and automatically spawns new workers (via `subprocess`) when demand exceeds capacity, or terminates idle workers when demand drops. Configurable min/max bounds.
+- **Round-Robin Load Balancing:** A shared `rr_index` pointer cycles through discovered workers, ensuring equal task distribution.
 - **Fault Tolerance:** A `TimeoutTransport` class enforces a 5-second TCP deadline on each worker call. On failure, a retry loop tries the next worker automatically.
 - **Real-Time Task Monitoring:** `task_table` dictionary tracks every task through states: `PENDING → RUNNING → COMPLETED / FAILED`.
+- **Cluster Status View:** Client can view live worker count, auto-scaler state, and task statistics.
 - **Concurrent Client Handling:** `ThreadingMixIn` enables the master to serve multiple client connections simultaneously.
-- **Graceful Degradation:** If all workers fail, the system returns a `FAILED` status without crashing.
-- **Multi-Machine Network Deployment:** Workers and master bind to `0.0.0.0`, accepting connections from any machine on the LAN. Worker IPs are configured in `config.py` and the system runs across real physical machines.
-- **Timestamped Logging:** Every log line in master and worker includes `[HH:MM:SS]`, making the 5-second fault detection gap visually measurable during demos.
-- **Stress Testing:** `stress_test.py` submits 20 concurrent tasks using Python threads, displays per-worker task distribution as a bar chart, and measures total execution time.
+- **Graceful Degradation:** If all workers fail, the system returns `"Service Unavailable"` without crashing.
+- **Dynamic Worker Join/Leave:** Start a new worker anytime — it self-registers and begins receiving tasks immediately. No restart needed.
+- **Multi-Machine Network Deployment:** All components bind to `0.0.0.0`, accepting connections from any machine on the LAN.
+- **Timestamped Logging:** Every log line includes `[HH:MM:SS]`, making the fault detection gap visually measurable during demos.
 
 ---
 
@@ -65,12 +76,12 @@ The proposed system follows a **Master–Worker architecture** over XML-RPC (Rem
 
 | System | Similarity to This Project |
 |--------|---------------------------|
-| **Apache Hadoop MapReduce** | Master–worker architecture; a JobTracker distributes map/reduce tasks to worker TaskTrackers, same as our master distributing tasks to workers |
-| **Celery (Python Task Queue)** | Distributed task execution with workers; uses a broker (like RabbitMQ) instead of direct RPC, but the concept of async task assignment and status tracking is identical |
-| **Sun RPC / ONC RPC** | The original RPC standard that inspired XML-RPC; used in NFS (Network File System) for remote file operations across networked machines |
-| **gRPC (Google)** | Modern, high-performance RPC framework using Protocol Buffers; this project uses XML-RPC as a simpler alternative achieving the same fundamental communication model |
-| **Kubernetes (Pod Scheduling)** | The Kubernetes scheduler assigns workloads (pods) to available nodes using resource-aware strategies — analogous to the master assigning tasks to workers |
-| **BOINC (Volunteer Computing)** | Distributes scientific computation tasks (e.g., SETI@home) to volunteer machines — conceptually identical to our worker nodes receiving and executing tasks |
+| **Consul / etcd / ZooKeeper** | Service discovery and health checking — our registry serves the same fundamental role: workers register, master discovers |
+| **Apache Hadoop MapReduce** | Master–worker architecture; a JobTracker distributes tasks to TaskTrackers, same as our master distributing tasks to workers |
+| **Celery (Python Task Queue)** | Distributed task execution with workers; uses a broker instead of direct RPC, but task assignment and status tracking are identical |
+| **Kubernetes (Pod Scheduling + HPA)** | The scheduler assigns workloads to nodes (our round-robin), and the Horizontal Pod Autoscaler scales replicas based on demand (our auto-scaler) |
+| **gRPC (Google)** | Modern high-performance RPC framework; this project uses XML-RPC as a simpler alternative achieving the same communication model |
+| **BOINC (Volunteer Computing)** | Distributes scientific tasks to volunteer machines — conceptually identical to our workers receiving and executing tasks |
 
 ---
 
@@ -81,7 +92,7 @@ The proposed system follows a **Master–Worker architecture** over XML-RPC (Rem
 ### Slide 1 — Title Slide (30 seconds)
 
 - **Title:** Enhanced RPC-Based Distributed Task Execution System
-- **Subtitle:** With Load Balancing, Fault Tolerance, and Task Monitoring
+- **Subtitle:** With Service Discovery, Auto-Scaling, Load Balancing, and Fault Tolerance
 - Course name, institute name, team member names, date
 
 ---
@@ -89,22 +100,24 @@ The proposed system follows a **Master–Worker architecture** over XML-RPC (Rem
 ### Slide 2 — Problem Statement (60 seconds)
 
 - Centralized systems: single machine handles all work
-- **3 core problems:**
+- **4 core problems:**
   - High processing load → slow performance
   - Single point of failure → entire system crashes if one machine fails
   - Poor scalability → adding more tasks makes it worse
-- **Solution needed:** Distribute work across multiple machines
-- Visual: Single server vs. cluster of servers
+  - Manual configuration → adding workers requires editing config files and restarting
+- **Solution needed:** Distribute work dynamically across self-discovering machines
+- Visual: Single server vs. auto-scaling cluster
 
 ---
 
 ### Slide 3 — Objective (30 seconds)
 
 - Design a distributed task execution system using RPC
-- Implement load balancing across multiple workers
-- Handle worker failures automatically (fault tolerance)
+- Implement **service discovery** so workers register themselves dynamically
+- Auto-scale workers based on demand (no manual intervention)
+- Handle worker failures automatically (heartbeat + timeout)
 - Track task status in real time
-- Deploy across **real physical machines** on a LAN network (not just simulation)
+- Deploy across **real physical machines** on a LAN network
 - Keep it lightweight — no external dependencies (pure Python)
 
 ---
@@ -113,19 +126,24 @@ The proposed system follows a **Master–Worker architecture** over XML-RPC (Rem
 
 - Show the architecture diagram:
   ```
-  [PC3 - Client]──────────────────────────────┐
-                                               │ RPC (port 9000)
-  [PC2 - Worker2: 0.0.0.0:8002] ←──── [PC1 - Master: 0.0.0.0:9000]
-  [PC3 - Worker1: 0.0.0.0:8001] ←──────────────┘ RPC (port 8001/8002)
-
-             All connected on same WiFi/LAN
+                          ┌────────────┐
+                          │  REGISTRY  │ :7000
+                          │  Service   │
+                     ┌───▶│  Discovery │◀── heartbeat ──┐
+                     │    └────────────┘                │
+                     │         ▲                        │
+               get_workers()  │ register                │
+                     │        │                         │
+  [Client]──▶ [Master :9000] ──▶ [Worker1 :8001]       │
+              [AutoScaler]   ──▶ [Worker2 :8002] ──────┘
+                                  [Worker3 :8003] ← spawned by auto-scaler
   ```
 - Explain each component's role in one line:
+  - **Registry:** Service discovery — workers register, master queries (port 7000)
   - **Client:** Submits tasks, views results (any machine)
-  - **Master:** Schedules tasks, balances load, detects failures (PC1)
-  - **Workers:** Execute tasks on separate physical machines (PC2, PC3)
-- Key point: servers bind to `0.0.0.0` — accept connections from any machine, not just localhost
-- Worker IPs and master IP configured in `config.py`
+  - **Master:** Discovers workers, schedules tasks, auto-scales (port 9000)
+  - **Workers:** Self-register, execute tasks (any port on any machine)
+- Key point: **No hardcoded worker IPs** — workers announce themselves
 
 ---
 
@@ -144,88 +162,90 @@ The proposed system follows a **Master–Worker architecture** over XML-RPC (Rem
 
 ---
 
-### Slide 6 — Load Balancing — Round Robin (60 seconds)
+### Slide 6 — Service Discovery & Auto-Scaling (90 seconds)
 
-- Tasks distributed evenly across workers
+- **Service Discovery:**
+  - Workers call `registry.register_worker()` on startup
+  - Workers send `heartbeat()` every 3 seconds
+  - Registry reaps workers that miss heartbeats for 10 seconds
+  - Master calls `registry.get_workers()` before each task assignment
+  - **Result:** No hardcoded IPs. Start a worker anywhere — it just works.
+
+- **Auto-Scaling:**
+  - Master monitors: `pending_tasks / worker_count`
+  - If ratio > threshold → spawn new worker via `subprocess`
+  - If worker idle > 30s and above minimum → terminate
+  - Bounds: MIN_WORKERS=2, MAX_WORKERS=6
+  - **Result:** System adapts to load automatically
+
+---
+
+### Slide 7 — Load Balancing — Round Robin (45 seconds)
+
+- Tasks distributed evenly across discovered workers
 - **How it works:**
   ```
   Task 101 → Worker1
   Task 102 → Worker2
-  Task 103 → Worker1
-  Task 104 → Worker2
+  Task 103 → Worker3
+  Task 104 → Worker1
   ```
 - `rr_index` pointer advances by 1 after each task
 - Wraps around using modulo: `index % number_of_workers`
-- **Benefit:** No single worker gets overloaded
+- Worker list is **dynamic** — adapts as workers join/leave
 
 ---
 
-### Slide 7 — Fault Tolerance (60 seconds)
+### Slide 8 — Fault Tolerance (60 seconds)
 
-- **Scenario:** Worker1 crashes mid-execution
-- **Detection:** TCP connection timeout (5 seconds) using custom `TimeoutTransport`
-- **Recovery — visible in timestamped logs:**
+- **Two layers of detection:**
+  1. **Proactive (heartbeat):** Registry removes dead workers after 10s → master won't try them
+  2. **Reactive (timeout):** If worker dies between heartbeats, 5s TCP timeout catches it
+
+- **Recovery visible in timestamped logs:**
   ```
   [10:35:10] Assigning task 105 to Worker1
-  [10:35:15] Worker1 unreachable. Trying next worker...   ← 5s gap
+  [10:35:15] Worker1 unreachable. Trying next...   ← 5s gap
   [10:35:15] Assigning task 105 to Worker2
   [10:35:15] Task 105 → COMPLETED
   ```
-- The **5-second timestamp gap** is the detection latency — not a bug, it's by design
-- Task is **automatically reassigned** — no manual intervention
-- If ALL workers fail → status = `FAILED`, graceful error message
-- **Known limitation:** Detection is reactive (on assignment), not proactive (no heartbeat)
 
----
-
-### Slide 8 — Task Monitoring (45 seconds)
-
-- Every task is tracked in a **task table** (in-memory dictionary on master)
-- Task lifecycle:
-  ```
-  PENDING → RUNNING → COMPLETED
-                    → FAILED
-  ```
-- Client can query:
-  - `get_task_status(task_id)` — status of one task
-  - `get_all_tasks()` — full table view
-- Example output:
-  ```
-  ID    Status      Worker    Result
-  101   COMPLETED   Worker1   120
-  102   COMPLETED   Worker2   30
-  103   FAILED      —         All workers unavailable
-  ```
+- If ALL workers fail → **"Service Unavailable"** returned to client
+- Auto-scaler detects 0 workers and spawns new ones
 
 ---
 
 ### Slide 9 — Live Demo Highlights (90 seconds)
 
 - **Demo 1:** Submit `factorial(5)` → result 120 on Worker1
-- **Demo 2:** Submit 4 tasks → show round-robin alternating Worker1/Worker2
-- **Demo 3:** Kill Worker1 → submit task → point to the **5-second timestamp gap** in master logs → task reassigned to Worker2. Say: *"This gap is the detection latency — the system knew Worker1 failed at exactly this second."*
-- **Demo 4:** Show task table (`View all tasks`) showing COMPLETED/FAILED history
-- **Demo 5:** Run `stress_test.py` → 20 concurrent tasks fire simultaneously → show bar chart with even split across workers (proves concurrent handling and round-robin at scale)
+- **Demo 2:** Submit 4 tasks → show round-robin alternating workers
+- **Demo 3:** Kill Worker1 → submit task → show reassignment (with or without 5s gap depending on Ctrl+C vs force kill)
+- **Demo 4:** Start a new worker mid-session (`python worker.py 8003`) → submit task → it goes to Worker3. Say: *"No config change, no restart — the worker registered itself automatically."*
+- **Demo 5:** Kill all workers → submit task → show **"Service Unavailable"** message
+- **Demo 6:** View cluster status (Option 4) → show live worker list and auto-scaler state
+- **Demo 7:** Run `stress_test.py` → 20 concurrent tasks → even distribution bar chart
 
 ---
 
 ### Slide 10 — Conclusion & Future Scope (60 seconds)
 
 **What we achieved:**
-- Functional distributed task execution over RPC
-- Round-robin load balancing
-- Automatic fault detection and recovery
-- Real-time task status monitoring
+- Dynamic service discovery (no hardcoded worker IPs)
+- Heartbeat-based health monitoring with automatic reaping
+- Auto-scaling workers based on demand
+- Round-robin load balancing across discovered workers
+- Automatic fault detection and recovery (5s timeout + heartbeat)
+- "Service Unavailable" graceful error when all workers down
+- Real-time task status monitoring and cluster status view
 - **Real multi-machine deployment** across physical machines on a LAN
-- **Concurrent stress testing** with visible per-worker distribution
 - Zero external dependencies — pure Python
 
 **Future Scope:**
-- Dynamic worker scaling (add workers at runtime)
 - Web-based dashboard for monitoring
 - Priority-based scheduling
-- Cloud deployment (AWS/GCP workers)
+- Cloud deployment (AWS/GCP workers registering remotely)
 - Persistent task history (database storage)
+- Registry replication (eliminate single point of failure)
 
 ---
 
@@ -239,69 +259,78 @@ RPC (Remote Procedure Call) is a protocol that allows a program to execute a fun
 
 ---
 
-**Q2. Why did you choose XML-RPC over gRPC?**
+**Q2. What is service discovery and why did you implement it?**
 
-We chose XML-RPC because it is built into Python's standard library, requires no external dependencies, and needs no `.proto` schema files. gRPC is more performant and production-grade but requires installing the `grpcio` package, defining Protocol Buffer schemas, and generating stub code — significant overhead for a college project. XML-RPC achieves the same fundamental distributed communication with far simpler setup, making it appropriate for demonstrating the core concepts without complexity.
-
----
-
-**Q3. How does round-robin load balancing work in your implementation?**
-
-We maintain a shared counter `rr_index` initialized to 0. When a task arrives, the master reads the current index to pick the worker (`WORKERS[rr_index]`), then increments the index using `rr_index = (rr_index + 1) % len(WORKERS)`. The modulo operation ensures the index wraps back to 0 after reaching the last worker. For two workers, this produces the pattern: Task1→Worker1, Task2→Worker2, Task3→Worker1, and so on. A threading lock protects these operations from race conditions when multiple clients submit tasks simultaneously.
+Service discovery is the mechanism by which components in a distributed system find each other without hardcoded addresses. In the original system, worker IPs were listed in `config.py` — adding a new worker required editing this file and restarting the master. With our registry-based service discovery, workers call `register_worker()` on startup and send heartbeats. The master calls `get_workers()` before each task to get the live list. This means you can start a worker on any machine, any port, and it automatically becomes available — no config changes, no restarts. This is similar to how Consul, etcd, and ZooKeeper work in production systems.
 
 ---
 
-**Q4. How does fault tolerance work? What happens when a worker crashes?**
+**Q3. How does the heartbeat mechanism work?**
 
-When the master calls a worker's RPC method, the call goes through a custom `TimeoutTransport` class that sets a 5-second timeout on the TCP connection. If the worker is down or unresponsive, the connection either refuses immediately or times out after 5 seconds, raising an exception. The master's `submit_task` function catches this exception inside a `for` loop that iterates over all workers. On failure, it logs the error and moves to the next worker in the list. If all workers fail, the task is marked `FAILED` with the message "All workers unavailable" and the client receives this gracefully. The timestamped logs make this detection gap visible — the timestamp jumps by 5 seconds on the failure line, clearly showing when the detection occurred.
-
----
-
-**Q5. What are the task states and how does a task transition between them?**
-
-A task has four possible states: `PENDING`, `RUNNING`, `COMPLETED`, and `FAILED`. When first submitted, it is set to `PENDING`. When the master selects a worker and begins the RPC call, it is updated to `RUNNING`. If the worker returns successfully, the status becomes `COMPLETED` with the result stored. If the worker fails and no other worker is available, the status becomes `FAILED`. These states are stored in the master's `task_table` dictionary and can be queried at any time by the client using `get_task_status(task_id)`.
+Each worker runs a background daemon thread that calls `registry.heartbeat(worker_id)` every 3 seconds (configurable via `HEARTBEAT_INTERVAL`). This updates the worker's `last_heartbeat` timestamp in the registry. The registry runs a reaper thread that checks every 5 seconds: if any worker's `last_heartbeat` is older than `HEARTBEAT_TIMEOUT` (10 seconds), the worker is removed from the pool. This provides **proactive** crash detection — the master doesn't have to waste 5 seconds connecting to a dead worker because the registry has already removed it. If the heartbeat returns `False` (registry doesn't recognize the worker), the worker automatically re-registers.
 
 ---
 
-**Q6. What is ThreadingMixIn and why did you use it in the master?**
+**Q4. How does auto-scaling work?**
 
-`ThreadingMixIn` is a Python mixin class from the `socketserver` module that makes an XML-RPC server handle each incoming connection in a separate thread. Without it, `SimpleXMLRPCServer` is single-threaded — it processes one client request at a time. If Client A submits a long task and Client B connects while it's running, Client B would be blocked until Client A's task completes. By combining `ThreadingMixIn` with `SimpleXMLRPCServer`, we create `ThreadedXMLRPCServer`, which spawns a new thread for each client connection, allowing multiple simultaneous clients — which is essential for a realistic distributed system.
-
----
-
-**Q7. What is the difference between centralized and distributed systems? How does your project illustrate this?**
-
-In a centralized system, a single machine handles all computation. If it's overloaded or crashes, the system stops. In a distributed system, work is spread across multiple machines, improving performance, scalability, and reliability. Our project illustrates this difference directly: the master distributes tasks to Worker1 and Worker2 instead of executing them itself. If Worker1 goes down, Worker2 takes over (fault tolerance). If more tasks arrive, adding Worker3 to `config.py` scales the system immediately — without changing any other code.
+The master runs a background thread called `auto_scaler_loop()` that checks every 5 seconds. It calculates the ratio of pending/running tasks to active workers. If this ratio exceeds `SCALE_UP_THRESHOLD` (2 tasks per worker), it spawns a new worker process using `subprocess.Popen(["python", "worker.py", <port>])`. The new worker self-registers with the registry and becomes available on the next `get_workers()` call. For scaling down, if a worker has been idle for longer than `SCALE_DOWN_IDLE` (30 seconds) and the worker count exceeds `MIN_WORKERS` (2), the auto-scaler terminates it. Only workers spawned by the auto-scaler can be terminated — manually started workers are never killed.
 
 ---
 
-**Q8. How would you add a new task type (e.g., multiplication) to this system?**
+**Q5. Why did you choose XML-RPC over gRPC?**
 
-Adding a new task type requires changes to only one file — `tasks.py`. You add a new function:
+We chose XML-RPC because it is built into Python's standard library, requires no external dependencies, and needs no `.proto` schema files. gRPC is more performant and production-grade but requires installing the `grpcio` package, defining Protocol Buffer schemas, and generating stub code. XML-RPC achieves the same fundamental distributed communication with far simpler setup, making it appropriate for demonstrating the core concepts without complexity.
+
+---
+
+**Q6. How does round-robin load balancing work with dynamic workers?**
+
+We maintain a shared counter `rr_index` initialized to 0. When a task arrives, the master first fetches the current worker list from the registry using `get_workers()`. It picks the worker at `workers[rr_index % len(workers)]`, then increments the index. Since the worker list is fetched fresh each time, the round-robin naturally adapts: if Worker3 joins, the next cycle includes it; if Worker1 leaves, it's excluded. The modulo operation ensures the index wraps around regardless of how many workers are available.
+
+---
+
+**Q7. How does fault tolerance work? What happens when a worker crashes?**
+
+There are two layers of fault detection. **Layer 1 (Proactive):** The registry's reaper thread checks heartbeats every 5 seconds. If a worker hasn't sent a heartbeat in 10 seconds, it's removed from the pool — the master won't even try to reach it. **Layer 2 (Reactive):** If a worker crashes between heartbeats (within the 10s window), the master's `TimeoutTransport` enforces a 5-second TCP timeout on the connection attempt. The `submit_task` function catches the exception and tries the next worker in the list. If all workers fail, the task is marked `FAILED` with `"Service Unavailable"`. The timestamped logs make this detection visible — a 5-second timestamp gap shows exactly when the failure was detected.
+
+---
+
+**Q8. What is ThreadingMixIn and why did you use it?**
+
+`ThreadingMixIn` is a Python mixin class from the `socketserver` module that makes an XML-RPC server handle each incoming connection in a separate thread. Without it, `SimpleXMLRPCServer` processes one request at a time. We use it in both the master (to handle multiple client connections simultaneously) and the registry (to handle concurrent worker registrations and heartbeats). This is essential when the stress test fires 20 tasks at once or when multiple workers are sending heartbeats simultaneously.
+
+---
+
+**Q9. What happens when you say "Service Unavailable"?**
+
+"Service Unavailable" is returned to the client in two scenarios: (1) when the registry returns an empty worker list (zero workers registered), the master skips the retry loop entirely and immediately returns FAILED with this message; (2) when all registered workers are unreachable (after trying each with a 5-second timeout), the result is the same. This is similar to HTTP status code 503 in web servers. The system doesn't crash — the client receives a clear error, and as soon as workers become available again (either by restarting them or via auto-scaler), subsequent tasks succeed.
+
+---
+
+**Q10. What are the limitations of your current implementation?**
+
+1. **Registry is a single point of failure** — if the registry crashes, new worker discovery stops (existing connections keep working until a re-query).
+2. **No persistent storage** — task history is lost when the master restarts.
+3. **Local auto-scaling only** — the auto-scaler spawns workers on the master's machine via subprocess; it cannot start workers on remote machines.
+4. **Synchronous execution** — the master blocks while waiting for a worker response.
+5. **No authentication** — any machine on the network can register as a worker or submit tasks.
+6. **Single-threaded workers** — each worker handles one task at a time.
+
+---
+
+**Q11. How is this project related to real-world systems?**
+
+The core principles are identical to production systems. **Consul/etcd** provides service discovery and health checks like our registry. **Kubernetes' scheduler** assigns workloads to nodes using strategies like our round-robin. **Kubernetes HPA** auto-scales pods based on metrics like our pending-tasks-per-worker threshold. **Celery** uses the same concept of workers executing tasks from a coordinator. Our project is a simplified, transparent implementation of these architectural patterns — making the underlying principles clearly visible.
+
+---
+
+**Q12. How would you add a new task type (e.g., multiplication)?**
+
+Adding a new task type requires changes to only one file — `tasks.py`. Add a function and register it:
 ```python
 def multiply(args):
     return args[0] * args[1]
-```
-Then register it in `TASK_HANDLERS`:
-```python
+
 TASK_HANDLERS = {"add": add, "factorial": factorial, "reverse": reverse, "multiply": multiply}
 ```
-You also add the corresponding input prompt in `client.py`. The master and worker code require zero changes because they use `TASK_HANDLERS[task_type]` dynamically — this is an example of the **Open/Closed Principle** (open for extension, closed for modification).
-
----
-
-**Q9. What are the limitations of your current implementation?**
-
-Several limitations exist in the current implementation:
-1. **No persistent storage** — task history is lost when the master restarts since `task_table` is in-memory only.
-2. **Static worker list** — workers cannot register or deregister dynamically; adding a worker requires editing `config.py` and restarting the master.
-3. **Synchronous execution** — the master blocks while waiting for a worker to complete a task; very long tasks delay other clients even with threading.
-4. **Reactive fault detection (no heartbeat)** — the master detects worker failure only when it tries to assign a task, resulting in a visible 5-second detection latency. Proactive detection via background heartbeat pings would reduce this to under 1 second, but is out of scope.
-5. **No authentication** — any machine on the network that knows the master's IP and port can submit tasks, which is a security concern in open networks.
-6. **Manual IP configuration** — all machines must have `config.py` manually updated with LAN IPs; there is no auto-discovery of workers.
-
----
-
-**Q10. How is this project related to real-world distributed systems like Hadoop or Kubernetes?**
-
-The core principles are identical. In Apache Hadoop, a JobTracker (master) distributes MapReduce tasks to TaskTrackers (workers) — exactly our master–worker model. Kubernetes' scheduler assigns workload pods to available nodes using resource-aware algorithms analogous to our round-robin strategy. Celery, a Python task queue used in production web applications, uses the same concept of workers pulling tasks from a coordinator and reporting status. Our project is a simplified, transparent implementation of these same architectural patterns — without the production complexity — making the underlying principles clearly visible and understandable.
+Then add the input prompt in `client.py`. The master, registry, and worker code require zero changes because they use `TASK_HANDLERS[task_type]` dynamically — this is an example of the **Open/Closed Principle**.

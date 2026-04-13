@@ -17,7 +17,8 @@ def main():
         print("  1. Submit task")
         print("  2. Check task status")
         print("  3. View all tasks")
-        print("  4. Exit")
+        print("  4. View cluster status")
+        print("  5. Exit")
 
         choice = input("\nChoice: ").strip()
 
@@ -65,11 +66,28 @@ def main():
                     print(f"{t['taskID']:<8} {str(t['status']):<12} {str(t['worker']):<12} {t['result']}")
 
         elif choice == "4":
+            cluster = master.get_cluster_status()
+            print(f"\n  -- Cluster Status --")
+            print(f"  Active workers : {cluster['worker_count']}")
+            if cluster['workers']:
+                for w in cluster['workers']:
+                    print(f"    - {w}")
+            else:
+                print(f"    (none)")
+            print(f"  Pending tasks  : {cluster['pending_tasks']}")
+            print(f"  Running tasks  : {cluster['running_tasks']}")
+            print(f"  Completed      : {cluster['completed_tasks']}")
+            print(f"  Failed         : {cluster['failed_tasks']}")
+            print(f"  Auto-scaling   : {'ON' if cluster['auto_scale'] else 'OFF'} ({cluster['auto_scale_range']})")
+            if cluster['spawned_workers']:
+                print(f"  Auto-spawned   : {', '.join(cluster['spawned_workers'])}")
+
+        elif choice == "5":
             print("Goodbye.")
             break
 
         else:
-            print("Invalid choice. Enter 1–4.")
+            print("Invalid choice. Enter 1-5.")
 
 
 if __name__ == "__main__":

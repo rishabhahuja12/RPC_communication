@@ -8,8 +8,10 @@ This project **implements** a **distributed computing system** where a central m
 
 Workers are discovered **dynamically** through a **service discovery registry** — no hardcoded IPs. The system **auto-scales** by spawning or killing worker processes based on demand.
 
+The client operates under **RPC transparency** — it has no knowledge of workers, task IDs, or cluster internals. It simply submits computations and receives results, as if processing were local. A separate **admin dashboard** (`admin.py`) provides full system visibility for the master operator.
+
 **In simple terms:**
-> Instead of one machine doing all the work, the work is split across multiple machines on a real network. Workers register themselves — you don't need to know their IPs in advance. If one machine breaks down, another takes over. If demand spikes, the system spawns new workers automatically. This is how real-world cloud systems like AWS, Google Cloud, and Kubernetes work at a fundamental level.
+> Instead of one machine doing all the work, the work is split across multiple machines on a real network. Workers register themselves — you don't need to know their IPs in advance. If one machine breaks down, another takes over. If demand spikes, the system spawns new workers automatically. The client never knows any of this is happening. This is how real-world cloud systems like AWS, Google Cloud, and Kubernetes work at a fundamental level.
 
 ---
 
@@ -21,6 +23,11 @@ If a single machine handles everything:
 - Execution is slow (no parallel work)
 - Scaling requires manual configuration changes
 
+**Security and transparency problems in naïve RPC implementations:**
+- If the client can see worker IPs, task IDs, and cluster status, it breaks the RPC abstraction — the client should feel like it's processing locally
+- If one client can see another client's tasks and results, it's a data isolation violation
+- Internal system details (auto-scaling state, worker health) should only be visible to the administrator
+
 This project solves this by introducing:
 - **Service discovery** — workers register themselves; master discovers them at runtime
 - **Heartbeat monitoring** — registry detects crashed workers automatically
@@ -28,7 +35,9 @@ This project solves this by introducing:
 - **Multiple workers** to share the load
 - **Load balancing** to distribute tasks fairly
 - **Fault tolerance** to handle worker crashes
-- **Task monitoring** to track what's happening
+- **RPC transparency** — client sees only inputs → results (no internals)
+- **Client isolation** — each client is identified by a unique ID, can only see their own results
+- **Admin separation** — full monitoring available only via admin.py on the master machine
 
 ---
 
@@ -46,6 +55,13 @@ result = factorial(5)   # runs on your machine
 result = worker_proxy.execute_task(101, "factorial", [5])
 # This function actually runs on another machine (e.g., port 8001)
 # But from the caller's perspective, it looks like a normal function call
+```
+
+### RPC Transparency (what the client sees):
+```python
+result = master.submit_task(client_id, "factorial", [5])
+# Client gets back: {"status": "COMPLETED", "result": 120}
+# No task ID, no worker ID — the client doesn't know distributed processing happened
 ```
 
 Python's built-in `xmlrpc` library handles all the networking (TCP, serialization) behind the scenes.
@@ -68,25 +84,28 @@ Python's built-in `xmlrpc` library handles all the networking (TCP, serializatio
 +-----------------------------+         │    +--------┴──────────────+
 |  CLIENT (any machine)       |         │    |  MASTER (PC1)         |
 |  Connects to MASTER_IP:9000 |────────────▶|  0.0.0.0:9000         |
-+-----------------------------+              |  Load Balancer        |
-                                             |  Task Tracker         |
-                                             |  Fault Detector       |
+|  Sees: inputs → results     |              |  Load Balancer        |
+|  No internal details        |              |  Task Tracker         |
++-----------------------------+              |  Fault Detector       |
                                              |  Auto-Scaler          |
-                                             +----+-------------+----+
-                                                  |             |
-                                                  | RPC         | RPC
-                                                  v             v
-                                           +----------+   +----------+
-                                           | WORKER 1 |   | WORKER 2 |
-                                           |  (PC2)   |   |  (PC3)   |
-                                           | 0.0.0.0  |   | 0.0.0.0  |
-                                           | :8001    |   | :8002    |
-                                           +----------+   +----------+
-                                                ↑               ↑
-                                                │  heartbeat    │  heartbeat
-                                                └───────────────┘
-                                                  every 3 seconds
-                                                  to REGISTRY
++-----------------------------+              +----+-------------+----+
+|  ADMIN (master machine)     |                   |             |
+|  Connects to localhost:9000 |──────────────────▶|             |
+|  Sees: everything           |              |    |             |
++-----------------------------+              |    |             |
+                                             | RPC|          RPC|
+                                             v    v             v
+                                       +----------+   +----------+
+                                       | WORKER 1 |   | WORKER 2 |
+                                       |  (PC2)   |   |  (PC3)   |
+                                       | 0.0.0.0  |   | 0.0.0.0  |
+                                       | :8001    |   | :8002    |
+                                       +----------+   +----------+
+                                            ↑               ↑
+                                            │  heartbeat    │  heartbeat
+                                            └───────────────┘
+                                              every 3 seconds
+                                              to REGISTRY
 ```
 
 ---
@@ -98,7 +117,7 @@ Python's built-in `xmlrpc` library handles all the networking (TCP, serializatio
 ### `config.py` — Configuration
 
 ```python
-# Master settings (unchanged)
+# Master settings
 MASTER_IP   = "localhost"
 MASTER_PORT = 9000
 
@@ -131,7 +150,7 @@ MAX_WORKERS        = 6
 
 ---
 
-### `registry.py` — Service Discovery Server (NEW)
+### `registry.py` — Service Discovery Server
 
 **Role:** The single source of truth for which workers are alive. Workers register here; the master queries here.
 
@@ -170,7 +189,7 @@ This replaces the old system where worker failures were only detected at task-as
 
 ### `worker.py` — Worker Node (Self-Registering)
 
-**Role:** Waits for RPC calls from the master, executes the task, returns the result. Now also **registers with the registry** and **sends heartbeats**.
+**Role:** Waits for RPC calls from the master, executes the task, returns the result. Also **registers with the registry** and **sends heartbeats**.
 
 **How to start:**
 ```bash
@@ -196,46 +215,69 @@ def heartbeat_loop():
 ```
 If the heartbeat returns `False` (registry doesn't know this worker), the worker automatically re-registers.
 
-**Task execution:** The `execute_task()` function is **completely unchanged** from the original — it still looks up `TASK_HANDLERS[task_type]`, calls the function, and returns the result dict.
+**Task execution:** The `execute_task()` function looks up `TASK_HANDLERS[task_type]`, calls the function, and returns the result dict. This is **completely unchanged** — workers don't know about client isolation or admin separation.
 
 ---
 
-### `master.py` — Master Node (Dynamic Discovery + Auto-Scaler)
+### `master.py` — Master Node (Dynamic Discovery + Auto-Scaler + Client Isolation)
 
-**Role:** The central brain. Discovers workers from the registry at runtime, assigns tasks, tracks status, handles failures, and auto-scales.
+**Role:** The central brain. Discovers workers from the registry at runtime, assigns tasks, tracks status, handles failures, auto-scales, and **enforces client isolation**.
 
-**Key changes from the original:**
+**Key features:**
 
 1. **No more `from config import WORKERS`** — replaced with `fetch_workers()` that queries the registry
-2. **Auto-scaler background thread** — spawns/kills worker processes
-3. **`get_cluster_status()` RPC method** — lets clients see live cluster info
-4. **"Service Unavailable" message** — returned when no workers are available
+2. **Client ID tracking** — every task records which client submitted it
+3. **Sanitized responses** — `submit_task()` returns only `{status, result}` to clients (no taskID, no workerID)
+4. **Client-scoped results** — `get_my_results(client_id)` returns only that client's past results
+5. **Admin endpoints** — `get_all_tasks()`, `get_task_status()`, `get_cluster_status()`, `get_all_clients()` provide full visibility for admin.py
+6. **Auto-scaler background thread** — spawns/kills worker processes
 
-**Dynamic worker discovery:**
+**Task table structure (internal to master):**
 ```python
-def fetch_workers():
-    """Fetch current live worker list from the registry."""
-    return get_registry().get_workers()
-
-def submit_task(task_type, task_data):
-    workers = fetch_workers()   # ← called EVERY time, not a static list
-    if not workers:
-        return {"status": "FAILED", "result": "Service Unavailable", ...}
-    # ... round-robin over dynamic list ...
+task_table[task_id] = {
+    "status": "PENDING",
+    "worker": None,
+    "result": None,
+    "client_id": "Client_a3f8c2e1",   # who submitted this task
+    "task_type": "factorial",          # what operation
+    "task_data": [5],                  # what inputs
+}
 ```
 
-**The `ts()` helper and why timestamps matter:**
+**What the client receives from `submit_task()`:**
 ```python
-def ts():
-    return datetime.now().strftime("%H:%M:%S")
+# Client sends:
+master.submit_task("Client_a3f8c2e1", "add", [10, 20])
+
+# Client gets back (sanitized — no internal details):
+{"status": "COMPLETED", "result": 30}
+
+# NOT this (old version leaked internals):
+# {"taskID": 101, "status": "COMPLETED", "result": 30, "workerID": "Worker1"}
 ```
-Every log line is prefixed with `[HH:MM:SS]`. When a worker fails, the log shows:
+
+**What `get_my_results()` returns:**
+```python
+master.get_my_results("Client_a3f8c2e1")
+# Returns only THIS client's results:
+[
+    {"task": "add", "input": [10, 20], "result": 30, "status": "COMPLETED"},
+    {"task": "factorial", "input": [5], "result": 120, "status": "COMPLETED"},
+]
 ```
-[10:35:10] Assigning task to Worker1
-[10:35:15] Worker1 unreachable. Trying next worker...   ← 5s gap visible
-[10:35:15] Assigning task to Worker2
+
+**Registered RPC endpoints:**
+```python
+# Client-facing (safe, isolated)
+server.register_function(submit_task, "submit_task")
+server.register_function(get_my_results, "get_my_results")
+
+# Admin-only (full access)
+server.register_function(get_task_status, "get_task_status")
+server.register_function(get_all_tasks, "get_all_tasks")
+server.register_function(get_cluster_status, "get_cluster_status")
+server.register_function(get_all_clients, "get_all_clients")
 ```
-The timestamp jump from `:10` to `:15` makes the detection latency measurable and visible — this is the key demo moment for fault tolerance.
 
 ---
 
@@ -267,7 +309,7 @@ for i in range(len(workers)):
     try:
         proxy = xmlrpc.client.ServerProxy(..., transport=TimeoutTransport(5))
         result = proxy.execute_task(task_id, task_type, task_data)
-        return result   # success — exit loop
+        return {"status": result["status"], "result": result["result"]}  # sanitized!
     except Exception as e:
         print(f"Worker failed. Trying next...")
         # loop continues to next worker
@@ -333,9 +375,9 @@ With it, each incoming client request runs in its own thread — multiple client
 #### Task Lifecycle in the Master:
 
 ```
-submit_task() called
+submit_task(client_id, task_type, task_data) called
       ↓
-task_id = 101, status = "PENDING"
+task_id = 101, status = "PENDING", client_id stored
       ↓
 fetch_workers() from registry
       ↓
@@ -348,6 +390,7 @@ status = "RUNNING", worker = "Worker1"
 RPC call to Worker1
       ↓
 Success?  → status = "COMPLETED", result = 120
+            → return {"status": "COMPLETED", "result": 120}  ← sanitized for client
 Failure?  → Try Worker2
               Success? → status = "COMPLETED"
               Failure? → status = "FAILED", result = "Service Unavailable"
@@ -355,56 +398,130 @@ Failure?  → Try Worker2
 
 ---
 
-### `client.py` — Client
+### `client.py` — Client (RPC-Transparent, Isolated)
 
-**Role:** The user interface. Lets you submit tasks, check status, view all tasks, and **view cluster status**. Communicates with the master via XML-RPC.
+**Role:** The user interface. Lets you submit computations and view your own past results. **Cannot** see task IDs, worker IDs, cluster status, or other clients' data.
 
+Each client instance generates a unique `client_id` on startup using `uuid4`:
 ```python
-master = xmlrpc.client.ServerProxy(f"http://{MASTER_IP}:{MASTER_PORT}/", allow_none=True)
-result = master.submit_task("factorial", [5])
+client_id = f"Client_{uuid.uuid4().hex[:8]}"
 ```
 
-**Menu options:**
-- **Option 1 (Submit task):** Takes task type and arguments from user, sends to master
-- **Option 2 (Check task status):** Queries master for a specific task ID
-- **Option 3 (View all tasks):** Gets entire task table from master and displays it
-- **Option 4 (View cluster status):** Shows active workers, task counts, auto-scaler state
-- **Option 5 (Exit):** Quits the client (master and workers keep running)
-
-**Cluster status output example:**
+**Menu:**
 ```
-  ── Cluster Status ──
-  Active workers : 3
+Options:
+  1. Compute
+  2. View past results
+  3. Exit
+```
+
+**Option 1 (Compute):** Takes operation type and arguments, sends to master, displays result in human-readable format:
+```
+Processing add([10, 20]) ...
+
+  10 + 20 = 30
+```
+
+**Option 2 (View past results):** Shows only this client's own results:
+```
+  Your Past Results:
+  -------------------------------------------------------
+    1. 10 + 20 = 30
+    2. factorial(5) = 120
+    3. reverse("hello") = "olleh"
+  -------------------------------------------------------
+```
+
+**What the client does NOT see:**
+- Task IDs (internally the master still tracks them)
+- Worker IDs (which machine processed the task)
+- Cluster status (how many workers, auto-scaling state)
+- Other clients' results (isolated by `client_id`)
+
+---
+
+### `admin.py` — Admin Dashboard (Master Machine Only)
+
+**Role:** Full-access monitoring dashboard for the master/system operator. Meant to run **only on the master machine**.
+
+**Menu:**
+```
+Admin Options:
+  1. View all tasks
+  2. Check task status (by ID)
+  3. View cluster status
+  4. View client summary
+  5. Exit
+```
+
+**Option 1 (View all tasks):** Full table with all internal details:
+```
+  ID       Type         Status       Worker       Client             Result
+  --------------------------------------------------------------------------------
+  101      add          COMPLETED    Worker1      Client_a3f8c2e1    30
+  102      factorial    COMPLETED    Worker2      Client_b7d9e4f2    120
+  103      reverse      FAILED       -            Client_a3f8c2e1    Service Unavailable
+```
+
+**Option 2 (Check task status):** Lookup any task by ID:
+```
+  Task 101:
+    Type      : add
+    Input     : [10, 20]
+    Status    : COMPLETED
+    Worker    : Worker1
+    Client    : Client_a3f8c2e1
+    Result    : 30
+```
+
+**Option 3 (View cluster status):** Workers, auto-scaling, task counts:
+```
+  ========================================
+         Cluster Status
+  ========================================
+  Active workers : 2
     • Worker1@localhost:8001
     • Worker2@localhost:8002
-    • Worker3@localhost:8003
   Pending tasks  : 0
   Running tasks  : 0
   Completed      : 15
-  Failed         : 0
+  Failed         : 1
   Auto-scaling   : ON (2-6)
-  Auto-spawned   : Worker3
+  Auto-spawned   : Worker1, Worker2
+  ========================================
+```
+
+**Option 4 (View client summary):** All clients who have submitted tasks:
+```
+  Client ID              Total    Done     Failed   Pending  Running
+  --------------------------------------------------------------
+  Client_a3f8c2e1        8        7        1        0        0
+  Client_b7d9e4f2        5        5        0        0        0
+  StressTest_c4d1f8a3    20       20       0        0        0
+
+  Total clients: 3
 ```
 
 ---
 
 ### `stress_test.py` — Stress Tester
 
-**Role:** Fires 20 tasks simultaneously from one machine to test the system under concurrent load.
+**Role:** Fires 20 tasks simultaneously from one machine to test the system under concurrent load. Now uses its own `client_id` (`StressTest_<uuid>`) so its tasks are tracked separately.
 
 ```python
-threads = [threading.Thread(target=submit, args=(i,)) for i in range(NUM_TASKS)]
+threads = [threading.Thread(target=submit, args=(i, client_id)) for i in range(NUM_TASKS)]
 for t in threads: t.start()
 for t in threads: t.join()
 ```
 
 **How it works:**
-1. Creates 20 threads, each pointing to a different task number
-2. All threads start at almost the same time (`t.start()` in a loop)
-3. Each thread creates its own `ServerProxy` connection to the master and calls `submit_task()`
-4. The master, being threaded (`ThreadingMixIn`), handles all 20 connections simultaneously
-5. Round-robin distributes them across all discovered workers
-6. After all threads finish (`t.join()`), prints a summary with per-worker bar chart and **unique worker count**
+1. Generates a unique `StressTest_<uuid>` client identity
+2. Creates 20 threads, each pointing to a different task number
+3. All threads start at almost the same time (`t.start()` in a loop)
+4. Each thread creates its own `ServerProxy` connection to the master and calls `submit_task(client_id, ...)`
+5. The master, being threaded (`ThreadingMixIn`), handles all 20 connections simultaneously
+6. Round-robin distributes them across all discovered workers
+7. After all threads finish (`t.join()`), prints a summary
 
 **Why a new `ServerProxy` per thread?**
 `ServerProxy` is not thread-safe — sharing one proxy between 20 threads causes race conditions. Each thread gets its own connection.
@@ -413,17 +530,18 @@ for t in threads: t.join()
 
 ## Data Flow — End to End
 
-Here's what happens when you type `factorial(5)`:
+Here's what happens when you type `factorial(5)` in the client:
 
 ```
 1. client.py  (any machine on LAN)
-   User picks "1. Submit task", type=factorial, number=5
-   Calls: master_proxy.submit_task("factorial", [5])
+   User picks "1. Compute", type=factorial, number=5
+   Calls: master_proxy.submit_task("Client_a3f8c2e1", "factorial", [5])
    ↓ (XML-RPC over TCP to MASTER_IP:9000)
 
 2. master.py — submit_task()  (PC1 - master machine)
    Assigns task_id = 101
-   Sets task_table[101] = {status: "PENDING", worker: None, result: None}
+   Sets task_table[101] = {status: "PENDING", client_id: "Client_a3f8c2e1",
+                           task_type: "factorial", task_data: [5], ...}
    Calls: registry_proxy.get_workers()
    ↓ (XML-RPC to REGISTRY_IP:7000)
 
@@ -445,29 +563,53 @@ Here's what happens when you type `factorial(5)`:
    ↑ (XML-RPC response back to master over LAN)
 
 6. master.py — back in submit_task()
-   Updates task_table[101] = {status: "COMPLETED", worker: "Worker1", result: 120}
-   Returns result dict to client
+   Updates task_table[101] = {status: "COMPLETED", worker: "Worker1", result: 120, ...}
+   Returns SANITIZED result to client: {"status": "COMPLETED", "result": 120}
    ↑ (XML-RPC response back to client over LAN)
 
 7. client.py
-   Receives result dict
-   Prints: Task ID: 101, Status: COMPLETED, Result: 120, Worker: Worker1
+   Receives: {"status": "COMPLETED", "result": 120}
+   Prints: factorial(5) = 120
+   (Client never sees task_id=101 or worker="Worker1")
 ```
+
+---
+
+## Security Design — Why Client/Admin Separation
+
+### The Problem (before the fix):
+In a proper RPC system, the client should **not know** that remote processing is happening — it should feel like local computation. The old `client.py` violated this principle by exposing:
+- Worker IPs and names (the client shouldn't know workers exist)
+- Task IDs (an internal tracking mechanism)
+- Cluster status (auto-scaling, worker counts)
+- Other clients' tasks and results (data isolation violation)
+
+### The Solution:
+| What | Client sees | Admin sees |
+|------|------------|------------|
+| Task submission result | `factorial(5) = 120` | Task 101: COMPLETED, Worker1, Client_a3f8c2e1, result: 120 |
+| Past results | Only their own, no IDs | All tasks from all clients with full details |
+| Workers | Nothing | Worker1@localhost:8001, Worker2@localhost:8002 |
+| Cluster status | Nothing | 2 active workers, auto-scaling ON, 15 completed tasks |
+| Other clients | Nothing | Client_a3f8c2e1: 8 tasks, Client_b7d9e4f2: 5 tasks |
 
 ---
 
 ## Key Concepts Summary
 
 | Concept | Where It Is | How It Works |
-|---------|------------|--------------|
+|---------|------------|--------------||
 | RPC | All files | `xmlrpc.server` + `xmlrpc.client` handle network calls |
+| RPC Transparency | `client.py`, `master.py` | Client gets only `{status, result}` — no internal details |
+| Client Isolation | `master.py:get_my_results()` | Each client identified by UUID; can only query own results |
+| Admin Separation | `admin.py` | Full visibility via admin-only RPC endpoints |
 | Service Discovery | `registry.py` | Workers register/heartbeat; master calls `get_workers()` |
 | Heartbeat | `worker.py` → `registry.py` | Workers ping registry every 3s; stale workers reaped after 10s |
 | Auto-Scaling | `master.py` | Background thread spawns/kills workers based on demand |
 | Load Balancing | `master.py:rr_index` | Cycles through discovered workers 0→1→2→0→1→2 |
 | Fault Tolerance | `master.py:for loop` | Catches exceptions, tries next worker |
 | Timeout | `master.py:TimeoutTransport` | TCP connection limit of 5 seconds |
-| Task Monitoring | `master.py:task_table` | Dict tracking every task's lifecycle |
+| Task Monitoring | `master.py:task_table` | Dict tracking every task's lifecycle (admin-visible only) |
 | Task States | `master.py` | PENDING → RUNNING → COMPLETED/FAILED |
 | Threading | `master.py:ThreadedXMLRPCServer` | Each client request in its own thread |
 | Multi-Machine Binding | `worker.py` + `master.py` + `registry.py` | Bind to `0.0.0.0` — accept from any LAN machine |
@@ -486,7 +628,8 @@ Here's what happens when you type `factorial(5)`:
 | `registry.py` | Decoupled service discovery — can run on any machine |
 | `worker.py` | Run multiple copies independently on different machines and ports |
 | `master.py` | Single central coordinator — never run multiple copies |
-| `client.py` | User-facing — can be run by multiple users on any machine simultaneously |
+| `client.py` | User-facing — can be run by multiple users on any machine simultaneously; RPC-transparent |
+| `admin.py` | Admin-only access — runs on master machine for full system monitoring |
 | `stress_test.py` | Standalone load tester — run from any machine, independent of client |
 
 ---
@@ -496,16 +639,17 @@ Here's what happens when you type `factorial(5)`:
 | Change | What Breaks |
 |--------|------------|
 | `REGISTRY_IP` in config.py ≠ registry machine's actual IP | Workers can't register; master can't discover workers |
-| `MASTER_IP` in config.py ≠ master machine's actual IP | Client/stress_test can't connect to master |
+| `MASTER_IP` in config.py ≠ master machine's actual IP | Client/stress_test/admin can't connect to master |
 | Registry not started before workers | Workers log warning but keep retrying via heartbeat thread |
 | Registry crashes after workers registered | Master uses last-known worker list until it re-queries |
 | Worker bound to `"localhost"` instead of `"0.0.0.0"` | Only accepts connections from same machine |
 | Task function raises unhandled exception | Worker returns FAILED (caught by try/except) |
-| All workers down | Client sees "Service Unavailable" |
+| All workers down | Client sees "Computation failed. Please try again later." |
 | Master down | Client throws ConnectionRefusedError immediately |
 | `WORKER_TIMEOUT` too low (e.g., 0.1s) | Tasks fail even when workers are alive |
 | `HEARTBEAT_TIMEOUT` too low (e.g., 1s) | Workers get reaped between heartbeats |
 | Firewall blocking ports 7000/8001/8002/9000 | Remote machines can't connect |
+| Running admin.py from a non-master machine | Works but exposes admin endpoints over network (not recommended) |
 
 ---
 
@@ -522,3 +666,5 @@ This project is a simplified version of how these real systems work:
 | Circuit Breaker pattern | Fault tolerance + timeout |
 | Task Queue (Celery, RabbitMQ) | task_table + PENDING/RUNNING states |
 | gRPC (production-grade) | XML-RPC (our simpler version) |
+| OAuth / API Scoping | Client isolation via client_id — each client sees only their data |
+| Admin Dashboard (Grafana, Kubernetes Dashboard) | admin.py — full system monitoring for operators |

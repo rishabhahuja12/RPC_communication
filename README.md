@@ -2,6 +2,8 @@
 
 A distributed computing system built with Python and XML-RPC. Clients submit tasks to a master node, which discovers workers dynamically through a **service discovery registry** and distributes tasks using round-robin load balancing with automatic fault tolerance and **auto-scaling**.
 
+The system enforces **RPC transparency** — the client has no knowledge of workers, task IDs, or cluster internals. An **admin dashboard** provides full system visibility exclusively for the master operator.
+
 ---
 
 ## Architecture
@@ -20,14 +22,16 @@ A distributed computing system built with Python and XML-RPC. Clients submit tas
 │      │       │   :9000    │──────▶│  :8001      │          │  :8002      │
 └──────┘       │ AutoScaler │──────▶│             │          │             │
                └────────────┘       └─────────────┘          └─────────────┘
-                     │                                             ▲
-                     └── RPC task execution ───────────────────────┘
+┌──────┐             ▲
+│Admin │─────────────┘  (admin.py — master machine only)
+└──────┘
 ```
 
 - **Registry** — service discovery server; workers register here, master queries here
-- **Client** — interactive CLI to submit tasks and monitor cluster status
+- **Client** — simple CLI to submit computations and view own results only (no internal details exposed)
 - **Master** — threaded XML-RPC server, discovers workers at runtime, auto-scales, tracks status, handles failures
 - **Workers** — XML-RPC servers that self-register and execute tasks
+- **Admin** — full-access dashboard (runs on master machine) for monitoring tasks, workers, clients, and cluster status
 
 All components can run on the same machine (localhost) or on separate machines over a LAN.
 
@@ -35,17 +39,20 @@ All components can run on the same machine (localhost) or on separate machines o
 
 ## Features
 
+- **RPC transparency** — client sees only inputs and results; no task IDs, worker IDs, or cluster details
+- **Client isolation** — each client has a unique ID; can only view their own past results
+- **Admin dashboard** — full system visibility (all tasks, workers, clients, cluster status) for the master operator
 - **Service discovery** — workers self-register with the registry on startup; no hardcoded IPs
 - **Heartbeat health checks** — workers send heartbeats every 3s; registry reaps stale workers after 10s
 - **Auto-scaling** — master spawns/kills worker processes based on demand (configurable min/max)
 - **Round-robin load balancing** — tasks distributed evenly across discovered workers
 - **Fault tolerance** — 5s TCP timeout per worker; automatic retry on next worker; "Service Unavailable" when all down
 - **Concurrent client support** — master uses `ThreadingMixIn` for multi-client handling
-- **Real-time monitoring** — task lifecycle tracking + live cluster status view
+- **Real-time monitoring** — task lifecycle tracking + live cluster status view (admin only)
 - **Dynamic worker join/leave** — start a new worker anytime, it auto-registers and receives tasks
 - **Multi-machine LAN support** — bind address is `0.0.0.0`; configure IPs in `config.py`
 - **Timestamped logs** — all output prefixed with `[HH:MM:SS]` for fault detection visibility
-- **Stress testing** — fires 20 concurrent tasks with per-worker distribution summary
+- **Stress testing** — fires 20 concurrent tasks with results summary
 
 ---
 
@@ -69,40 +76,47 @@ No external dependencies — runs out of the box with any Python 3 installation.
 RPC_communication/
 ├── config.py          # IPs, ports, timeouts, auto-scaling settings
 ├── tasks.py           # Task function definitions
-├── registry.py        # Service discovery server (NEW)
+├── registry.py        # Service discovery server
 ├── worker.py          # Worker XML-RPC server (self-registers)
 ├── master.py          # Master XML-RPC server (dynamic discovery + auto-scaler)
-├── client.py          # Interactive CLI client
+├── client.py          # Simplified CLI client (RPC-transparent, isolated per client)
+├── admin.py           # Admin dashboard (full system visibility, master machine only)
 ├── stress_test.py     # 20-thread concurrent load test
 ├── TESTING_GUIDE.md   # Step-by-step test cases with expected outputs
 ├── EXPLANATION.md     # Detailed architecture and code explanation
-└── PRESENTATION.md    # PPT structure and viva Q&A
+├── PRESENTATION.md    # PPT structure and viva Q&A
+└── DEPLOYMENT_GUIDE.md # Detailed local + multi-device setup instructions
 ```
 
 ---
 
 ## Quick Start (Single Machine)
 
-Open **5 separate terminals** in the project folder:
+With `AUTO_SCALE = True` (default), you only need **3 terminals**:
 
 ```bash
 # Terminal 1 — start the service discovery registry
 python registry.py
 
-# Terminal 2 — start worker on port 8001 (auto-registers with registry)
-python worker.py 8001
-
-# Terminal 3 — start worker on port 8002 (auto-registers with registry)
-python worker.py 8002
-
-# Terminal 4 — start master (discovers workers from registry, auto-scaler starts)
+# Terminal 2 — start master (auto-spawns MIN_WORKERS workers automatically)
 python master.py
 
-# Terminal 5 — run the interactive client
+# Terminal 3 — run the client
 python client.py
 ```
 
-> **Note:** Workers can be started in any order, before or after the master. They register themselves with the registry automatically.
+> **Note:** The auto-scaler will automatically spawn worker processes to meet `MIN_WORKERS` (default: 2). You don't need to start workers manually.
+
+**To run the admin dashboard** (separate terminal on master machine):
+```bash
+python admin.py
+```
+
+**To manually start workers** (if `AUTO_SCALE = False`):
+```bash
+python worker.py 8001
+python worker.py 8002
+```
 
 ---
 
@@ -137,9 +151,53 @@ python master.py
 
 # Client (any machine):
 python client.py
+
+# Admin (master machine only):
+python admin.py
 ```
 
 No need to list worker IPs anywhere — they self-register!
+
+> For detailed multi-device deployment (Windows ↔ Mac, specific commands), see [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md).
+
+---
+
+## Client vs Admin — Role Separation
+
+| Feature | Client (`client.py`) | Admin (`admin.py`) |
+|---------|---------------------|--------------------|
+| Submit tasks | ✅ | ❌ |
+| See result | ✅ (own results only) | ✅ (all results) |
+| See task IDs | ❌ | ✅ |
+| See worker IDs | ❌ | ✅ |
+| See other clients' data | ❌ | ✅ |
+| View cluster status | ❌ | ✅ |
+| Check task status by ID | ❌ | ✅ |
+| View client summary | ❌ | ✅ |
+
+**Client sees:**
+```
+Options:
+  1. Compute
+  2. View past results
+  3. Exit
+
+  10 + 20 = 30
+  factorial(5) = 120
+```
+
+**Admin sees:**
+```
+Admin Options:
+  1. View all tasks
+  2. Check task status (by ID)
+  3. View cluster status
+  4. View client summary
+  5. Exit
+
+  ID       Type         Status       Worker       Client             Result
+  101      add          COMPLETED    Worker1      Client_a3f8c2e1    30
+```
 
 ---
 
@@ -170,20 +228,29 @@ execute_task(task_id, task_type, task_data)
 → { taskID, status, result, workerID }
 ```
 
-**Master RPC** (called by client / stress_test):
+**Master RPC — Client-Facing** (used by client.py):
 ```
-submit_task(task_type, task_data)
-→ { taskID, status, result, workerID }
+submit_task(client_id, task_type, task_data)
+→ { status, result }                          ← no taskID, no workerID
 
+get_my_results(client_id)
+→ [ { task, input, result, status }, ... ]    ← only this client's results
+```
+
+**Master RPC — Admin-Only** (used by admin.py):
+```
 get_task_status(task_id)
-→ { taskID, status, worker, result }
+→ { taskID, status, worker, result, client_id, task_type, task_data }
 
 get_all_tasks()
-→ [ { taskID, status, worker, result }, ... ]
+→ [ { taskID, status, worker, result, client_id, task_type, task_data }, ... ]
 
 get_cluster_status()
 → { worker_count, workers, pending_tasks, running_tasks, completed_tasks,
     failed_tasks, auto_scale, auto_scale_range, spawned_workers }
+
+get_all_clients()
+→ [ { client_id, total, completed, failed, pending, running }, ... ]
 ```
 
 ---
@@ -226,21 +293,16 @@ Stop a worker mid-session (`Ctrl+C` in its terminal), then submit a task via the
 
 Expected master output:
 ```
-[14:02:10] [Master] Task 101 submitted: factorial([10])
+[14:02:10] [Master] Task 101 submitted by Client_a3f8c2e1: factorial([10])
 [14:02:10] [Master] Assigning task 101 to Worker1
 [14:02:15] [Master] Worker1 unreachable (timed out). Trying next worker...
 [14:02:15] [Master] Assigning task 101 to Worker2
 [14:02:15] [Master] Task 101 → COMPLETED | Result: 3628800
 ```
 
-The **5-second gap** between lines 2 and 3 is the fault detection latency — the TCP timeout expiring before failover kicks in.
-
-If **all workers** are down:
+Client sees only:
 ```
-  Task ID : 101
-  Status  : FAILED
-  Result  : Service Unavailable
-  Worker  : None
+  factorial(10) = 3628800
 ```
 
 ---
@@ -251,13 +313,13 @@ If **all workers** are down:
 python stress_test.py
 ```
 
-Fires 20 concurrent tasks and prints a per-worker distribution chart:
+Fires 20 concurrent tasks and prints a results summary:
 
 ```
-Worker1  ██████████  10
-Worker2  ██████████  10
-Unique workers: 2
-Total time: 1.83s
+  Total tasks    : 20
+  Completed      : 20
+  Failed         : 0
+  Time taken     : 1.83s
 ```
 
 ---
@@ -276,6 +338,7 @@ Total time: 1.83s
 
 ## Documentation
 
-- [`TESTING_GUIDE.md`](TESTING_GUIDE.md) — 13 test cases with exact inputs and expected outputs
+- [`TESTING_GUIDE.md`](TESTING_GUIDE.md) — test cases with exact inputs and expected outputs
 - [`EXPLANATION.md`](EXPLANATION.md) — full architecture walkthrough, file-by-file explanation, data flow
 - [`PRESENTATION.md`](PRESENTATION.md) — 10-slide PPT outline and viva Q&A preparation
+- [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) — step-by-step local and multi-device deployment (Windows & Mac)

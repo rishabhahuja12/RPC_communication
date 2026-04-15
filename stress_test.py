@@ -1,4 +1,5 @@
 import threading
+import uuid
 import xmlrpc.client
 import time
 from config import MASTER_IP, MASTER_PORT
@@ -11,7 +12,7 @@ results = {}
 lock = threading.Lock()
 
 
-def submit(task_num):
+def submit(task_num, client_id):
     master = xmlrpc.client.ServerProxy(
         f"http://{MASTER_IP}:{MASTER_PORT}/",
         allow_none=True,
@@ -26,24 +27,26 @@ def submit(task_num):
     else:
         task_data = [f"stress{task_num}"]         # reverse("stressN")
 
-    result = master.submit_task(task_type, task_data)
+    result = master.submit_task(client_id, task_type, task_data)
 
     with lock:
-        results[task_num] = result
-        worker_name = str(result['workerID']) if result['workerID'] else "None"
+        results[task_num] = {**result, "task_type": task_type, "task_data": task_data}
         print(
-            f"  Task {result['taskID']:>4} | {task_type:<10} | "
-            f"{str(result['status']):<10} | Worker: {worker_name:<10} | Result: {result['result']}"
+            f"  #{task_num:>3} | {task_type:<10} | "
+            f"{str(result['status']):<10} | Result: {result['result']}"
         )
 
 
 def main():
+    client_id = f"StressTest_{uuid.uuid4().hex[:8]}"
+
     print("=" * 70)
     print(f"  STRESS TEST -- Firing {NUM_TASKS} tasks simultaneously")
     print(f"  Target master: {MASTER_IP}:{MASTER_PORT}")
+    print(f"  Client ID: {client_id}")
     print("=" * 70)
 
-    threads = [threading.Thread(target=submit, args=(i,)) for i in range(NUM_TASKS)]
+    threads = [threading.Thread(target=submit, args=(i, client_id)) for i in range(NUM_TASKS)]
 
     start = time.time()
 
@@ -56,13 +59,8 @@ def main():
     elapsed = time.time() - start
 
     # Summary
-    worker_counts = {}
     completed = sum(1 for r in results.values() if r["status"] == "COMPLETED")
     failed = sum(1 for r in results.values() if r["status"] == "FAILED")
-
-    for r in results.values():
-        w = str(r["workerID"]) if r["workerID"] else "None"
-        worker_counts[w] = worker_counts.get(w, 0) + 1
 
     print("\n" + "=" * 70)
     print("  RESULTS SUMMARY")
@@ -71,11 +69,6 @@ def main():
     print(f"  Completed      : {completed}")
     print(f"  Failed         : {failed}")
     print(f"  Time taken     : {elapsed:.2f} seconds")
-    print(f"  Unique workers : {len([w for w in worker_counts if w != 'None'])}")
-    print(f"\n  Tasks per worker:")
-    for worker, count in sorted(worker_counts.items()):
-        bar = "#" * count
-        print(f"    {worker:<12} {bar}  ({count} tasks)")
     print("=" * 70)
 
 

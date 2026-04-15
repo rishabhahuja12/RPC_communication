@@ -1,30 +1,32 @@
+import uuid
 import xmlrpc.client
 from config import MASTER_IP, MASTER_PORT
 
 
 def main():
+    # Generate a unique client identity (client never sees internal details)
+    client_id = f"Client_{uuid.uuid4().hex[:8]}"
+
     master = xmlrpc.client.ServerProxy(
         f"http://{MASTER_IP}:{MASTER_PORT}/",
         allow_none=True,
     )
 
     print("=" * 45)
-    print("   RPC Distributed Task Execution Client")
+    print("       Distributed Computation Client")
     print("=" * 45)
 
     while True:
         print("\nOptions:")
-        print("  1. Submit task")
-        print("  2. Check task status")
-        print("  3. View all tasks")
-        print("  4. View cluster status")
-        print("  5. Exit")
+        print("  1. Compute")
+        print("  2. View past results")
+        print("  3. Exit")
 
         choice = input("\nChoice: ").strip()
 
         if choice == "1":
-            print("\nTask types: add | factorial | reverse")
-            task_type = input("Task type: ").strip().lower()
+            print("\nAvailable operations: add | factorial | reverse")
+            task_type = input("Operation: ").strip().lower()
 
             if task_type == "add":
                 a = int(input("First number : "))
@@ -37,57 +39,57 @@ def main():
                 s = input("String: ")
                 task_data = [s]
             else:
-                print("Unknown task type. Choose: add | factorial | reverse")
+                print("Unknown operation. Choose: add | factorial | reverse")
                 continue
 
-            print(f"\nSubmitting: {task_type}({task_data}) ...")
-            result = master.submit_task(task_type, task_data)
-            print(f"\n  Task ID : {result['taskID']}")
-            print(f"  Status  : {result['status']}")
-            print(f"  Result  : {result['result']}")
-            print(f"  Worker  : {result['workerID']}")
+            print(f"\nProcessing {task_type}({task_data}) ...")
+            result = master.submit_task(client_id, task_type, task_data)
+
+            if result["status"] == "COMPLETED":
+                # Display result based on task type
+                if task_type == "add":
+                    print(f"\n  {task_data[0]} + {task_data[1]} = {result['result']}")
+                elif task_type == "factorial":
+                    print(f"\n  factorial({task_data[0]}) = {result['result']}")
+                elif task_type == "reverse":
+                    print(f"\n  reverse(\"{task_data[0]}\") = \"{result['result']}\"")
+            else:
+                print(f"\n  Computation failed. Please try again later.")
 
         elif choice == "2":
-            task_id = int(input("Task ID: "))
-            status = master.get_task_status(task_id)
-            print(f"\n  Task {task_id}:")
-            print(f"    Status : {status['status']}")
-            print(f"    Worker : {status['worker']}")
-            print(f"    Result : {status['result']}")
+            results = master.get_my_results(client_id)
+            if not results:
+                print("\nNo past results found.")
+            else:
+                print(f"\n  Your Past Results:")
+                print(f"  {'-' * 55}")
+                for i, r in enumerate(results, 1):
+                    task = r["task"]
+                    inp = r["input"]
+                    res = r["result"]
+                    status = r["status"]
+
+                    if task == "add":
+                        desc = f"{inp[0]} + {inp[1]}"
+                    elif task == "factorial":
+                        desc = f"factorial({inp[0]})"
+                    elif task == "reverse":
+                        desc = f"reverse(\"{inp[0]}\")"
+                    else:
+                        desc = f"{task}({inp})"
+
+                    if status == "COMPLETED":
+                        print(f"  {i:>3}. {desc} = {res}")
+                    else:
+                        print(f"  {i:>3}. {desc} -> FAILED")
+                print(f"  {'-' * 55}")
 
         elif choice == "3":
-            tasks = master.get_all_tasks()
-            if not tasks:
-                print("\nNo tasks submitted yet.")
-            else:
-                print(f"\n{'ID':<8} {'Status':<12} {'Worker':<12} Result")
-                print("-" * 50)
-                for t in tasks:
-                    print(f"{t['taskID']:<8} {str(t['status']):<12} {str(t['worker']):<12} {t['result']}")
-
-        elif choice == "4":
-            cluster = master.get_cluster_status()
-            print(f"\n  -- Cluster Status --")
-            print(f"  Active workers : {cluster['worker_count']}")
-            if cluster['workers']:
-                for w in cluster['workers']:
-                    print(f"    - {w}")
-            else:
-                print(f"    (none)")
-            print(f"  Pending tasks  : {cluster['pending_tasks']}")
-            print(f"  Running tasks  : {cluster['running_tasks']}")
-            print(f"  Completed      : {cluster['completed_tasks']}")
-            print(f"  Failed         : {cluster['failed_tasks']}")
-            print(f"  Auto-scaling   : {'ON' if cluster['auto_scale'] else 'OFF'} ({cluster['auto_scale_range']})")
-            if cluster['spawned_workers']:
-                print(f"  Auto-spawned   : {', '.join(cluster['spawned_workers'])}")
-
-        elif choice == "5":
             print("Goodbye.")
             break
 
         else:
-            print("Invalid choice. Enter 1-5.")
+            print("Invalid choice. Enter 1-3.")
 
 
 if __name__ == "__main__":

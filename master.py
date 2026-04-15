@@ -69,14 +69,21 @@ worker_last_task_lock = threading.Lock()
 
 # -- RPC Methods (called by client / stress_test) ----------------------
 
-def submit_task(task_type, task_data):
+def submit_task(client_id, task_type, task_data):
     # Assign task ID
     with lock:
         task_counter[0] += 1
         task_id = task_counter[0]
 
-    task_table[task_id] = {"status": "PENDING", "worker": None, "result": None}
-    print(f"\n[{ts()}] [Master] Task {task_id} submitted: {task_type}({task_data})", flush=True)
+    task_table[task_id] = {
+        "status": "PENDING",
+        "worker": None,
+        "result": None,
+        "client_id": client_id,
+        "task_type": task_type,
+        "task_data": list(task_data),
+    }
+    print(f"\n[{ts()}] [Master] Task {task_id} submitted by {client_id}: {task_type}({task_data})", flush=True)
 
     # Fetch live workers from registry (no hardcoded list!)
     workers = fetch_workers()
@@ -86,10 +93,8 @@ def submit_task(task_type, task_data):
         task_table[task_id]["result"] = "Service Unavailable"
         print(f"[{ts()}] [Master] Task {task_id} FAILED -- Service Unavailable (no workers registered)", flush=True)
         return {
-            "taskID": task_id,
             "status": "FAILED",
             "result": "Service Unavailable",
-            "workerID": None,
         }
 
     # Pick starting worker via round-robin
@@ -120,7 +125,11 @@ def submit_task(task_type, task_data):
             with worker_last_task_lock:
                 worker_last_task[worker["id"]] = time.time()
 
-            return result
+            # Return only status and result to client (no internal IDs)
+            return {
+                "status": result["status"],
+                "result": result["result"],
+            }
 
         except Exception as e:
             print(f"[{ts()}] [Master] {worker['id']} unreachable ({e}). Trying next worker...", flush=True)
@@ -130,29 +139,82 @@ def submit_task(task_type, task_data):
     task_table[task_id]["result"] = "Service Unavailable"
     print(f"[{ts()}] [Master] Task {task_id} FAILED -- Service Unavailable (all workers unreachable)", flush=True)
     return {
-        "taskID": task_id,
         "status": "FAILED",
         "result": "Service Unavailable",
-        "workerID": None,
     }
 
 
 def get_task_status(task_id):
+    """Admin-only: get full status of a specific task."""
     if task_id not in task_table:
-        return {"taskID": task_id, "status": "NOT_FOUND", "worker": None, "result": None}
+        return {"taskID": task_id, "status": "NOT_FOUND", "worker": None, "result": None, "client_id": None}
     t = task_table[task_id]
-    return {"taskID": task_id, "status": t["status"], "worker": t["worker"], "result": t["result"]}
+    return {
+        "taskID": task_id,
+        "status": t["status"],
+        "worker": t["worker"],
+        "result": t["result"],
+        "client_id": t.get("client_id", "unknown"),
+        "task_type": t.get("task_type", "unknown"),
+        "task_data": t.get("task_data", []),
+    }
 
 
 def get_all_tasks():
+    """Admin-only: get full details of all tasks."""
     return [
-        {"taskID": k, "status": v["status"], "worker": v["worker"], "result": v["result"]}
+        {
+            "taskID": k,
+            "status": v["status"],
+            "worker": v["worker"],
+            "result": v["result"],
+            "client_id": v.get("client_id", "unknown"),
+            "task_type": v.get("task_type", "unknown"),
+            "task_data": v.get("task_data", []),
+        }
         for k, v in task_table.items()
     ]
 
 
+def get_my_results(client_id):
+    """Client-facing: return only this client's past results (no internal IDs)."""
+    results = []
+    for v in task_table.values():
+        if v.get("client_id") == client_id:
+            results.append({
+                "task": v.get("task_type", "unknown"),
+                "input": v.get("task_data", []),
+                "result": v["result"],
+                "status": v["status"],
+            })
+    return results
+
+
+def get_all_clients():
+    """Admin-only: return summary of all connected clients."""
+    client_stats = {}
+    for v in task_table.values():
+        cid = v.get("client_id", "unknown")
+        if cid not in client_stats:
+            client_stats[cid] = {"total": 0, "completed": 0, "failed": 0, "pending": 0, "running": 0}
+        client_stats[cid]["total"] += 1
+        status = v["status"]
+        if status == "COMPLETED":
+            client_stats[cid]["completed"] += 1
+        elif status == "FAILED":
+            client_stats[cid]["failed"] += 1
+        elif status == "PENDING":
+            client_stats[cid]["pending"] += 1
+        elif status == "RUNNING":
+            client_stats[cid]["running"] += 1
+    return [
+        {"client_id": cid, **stats}
+        for cid, stats in client_stats.items()
+    ]
+
+
 def get_cluster_status():
-    """Return current cluster state for the client to display."""
+    """Admin-only: return current cluster state."""
     workers = fetch_workers()
     pending = sum(1 for t in task_table.values() if t["status"] == "PENDING")
     running = sum(1 for t in task_table.values() if t["status"] == "RUNNING")
@@ -290,10 +352,14 @@ if __name__ == "__main__":
     server = ThreadedXMLRPCServer(
         ("0.0.0.0", MASTER_PORT), logRequests=False, allow_none=True
     )
+    # Client-facing endpoints
     server.register_function(submit_task, "submit_task")
+    server.register_function(get_my_results, "get_my_results")
+    # Admin-only endpoints (used by admin.py)
     server.register_function(get_task_status, "get_task_status")
     server.register_function(get_all_tasks, "get_all_tasks")
     server.register_function(get_cluster_status, "get_cluster_status")
+    server.register_function(get_all_clients, "get_all_clients")
 
     print(f"[{ts()}] [Master] Running on 0.0.0.0:{MASTER_PORT} (clients connect via {MASTER_IP}:{MASTER_PORT})", flush=True)
     print(f"[{ts()}] [Master] Registry: {REGISTRY_IP}:{REGISTRY_PORT}", flush=True)

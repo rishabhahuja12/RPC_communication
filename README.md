@@ -58,13 +58,13 @@ All components can run on the same machine (localhost) or on separate machines o
 
 ## Tech Stack
 
-| Layer      | Technology                        |
-|------------|-----------------------------------|
-| Language   | Python 3 (stdlib only)            |
-| RPC        | `xmlrpc.server`, `xmlrpc.client`  |
-| Concurrency| `threading`, `ThreadingMixIn`     |
-| Transport  | HTTP / TCP with custom timeout    |
-| Scaling    | `subprocess` (auto-spawning)      |
+| Layer       | Technology                       |
+| ----------- | -------------------------------- |
+| Language    | Python 3 (stdlib only)           |
+| RPC         | `xmlrpc.server`, `xmlrpc.client` |
+| Concurrency | `threading`, `ThreadingMixIn`    |
+| Transport   | HTTP / TCP with custom timeout   |
+| Scaling     | `subprocess` (auto-spawning)     |
 
 No external dependencies — runs out of the box with any Python 3 installation.
 
@@ -90,6 +90,22 @@ RPC_communication/
 
 ---
 
+## Troubleshooting
+
+### Unable to connect to the Registry
+
+- Ensure `registry.py` is running before starting the Master.
+- Verify that the Registry IP address and port in `config.py` are correct.
+- Check that the required ports are not blocked by your firewall.
+
+### Client cannot connect to the Master
+
+- Confirm that `master.py` is running.
+- Verify the Master IP address and port in `config.py`.
+- Ensure the Registry and Master services have started successfully before running the Client.
+
+---
+
 ## Quick Start (Single Machine)
 
 With `AUTO_SCALE = True` (default), you only need **3 terminals**:
@@ -108,11 +124,13 @@ python client.py
 > **Note:** The auto-scaler will automatically spawn worker processes to meet `MIN_WORKERS` (default: 2). You don't need to start workers manually.
 
 **To run the admin dashboard** (separate terminal on master machine):
+
 ```bash
 python admin.py
 ```
 
 **To manually start workers** (if `AUTO_SCALE = False`):
+
 ```bash
 python worker.py 8001
 python worker.py 8002
@@ -132,6 +150,7 @@ REGISTRY_IP = "192.168.x.x"    # LAN IP of the machine running registry.py
 > Find your IP: `ipconfig` on Windows, `ifconfig` on Mac/Linux.
 
 **2. Open firewall ports** on each machine:
+
 - Registry machine: allow inbound TCP on `7000`
 - Worker machines: allow inbound TCP on the worker's port (e.g., `8001`)
 - Master machine: allow inbound TCP on `9000`
@@ -164,18 +183,19 @@ No need to list worker IPs anywhere — they self-register!
 
 ## Client vs Admin — Role Separation
 
-| Feature | Client (`client.py`) | Admin (`admin.py`) |
-|---------|---------------------|--------------------|
-| Submit tasks | ✅ | ❌ |
-| See result | ✅ (own results only) | ✅ (all results) |
-| See task IDs | ❌ | ✅ |
-| See worker IDs | ❌ | ✅ |
-| See other clients' data | ❌ | ✅ |
-| View cluster status | ❌ | ✅ |
-| Check task status by ID | ❌ | ✅ |
-| View client summary | ❌ | ✅ |
+| Feature                 | Client (`client.py`)  | Admin (`admin.py`) |
+| ----------------------- | --------------------- | ------------------ |
+| Submit tasks            | ✅                    | ❌                 |
+| See result              | ✅ (own results only) | ✅ (all results)   |
+| See task IDs            | ❌                    | ✅                 |
+| See worker IDs          | ❌                    | ✅                 |
+| See other clients' data | ❌                    | ✅                 |
+| View cluster status     | ❌                    | ✅                 |
+| Check task status by ID | ❌                    | ✅                 |
+| View client summary     | ❌                    | ✅                 |
 
 **Client sees:**
+
 ```
 Options:
   1. Compute
@@ -187,6 +207,7 @@ Options:
 ```
 
 **Admin sees:**
+
 ```
 Admin Options:
   1. View all tasks
@@ -203,17 +224,18 @@ Admin Options:
 
 ## Supported Tasks
 
-| Task        | Input            | Example                    |
-|-------------|------------------|----------------------------|
-| `add`       | Two integers     | `add([10, 5])` → `15`      |
-| `factorial` | One integer      | `factorial([6])` → `720`   |
-| `reverse`   | One string       | `reverse(["hello"])` → `"olleh"` |
+| Task        | Input        | Example                          |
+| ----------- | ------------ | -------------------------------- |
+| `add`       | Two integers | `add([10, 5])` → `15`            |
+| `factorial` | One integer  | `factorial([6])` → `720`         |
+| `reverse`   | One string   | `reverse(["hello"])` → `"olleh"` |
 
 ---
 
 ## API Reference
 
 **Registry RPC** (called by workers and master):
+
 ```
 register_worker(worker_id, host, port) → True
 deregister_worker(worker_id)           → True/False
@@ -223,12 +245,14 @@ get_worker_count()                     → int
 ```
 
 **Worker RPC** (called by master only):
+
 ```
 execute_task(task_id, task_type, task_data)
 → { taskID, status, result, workerID }
 ```
 
 **Master RPC — Client-Facing** (used by client.py):
+
 ```
 submit_task(client_id, task_type, task_data)
 → { status, result }                          ← no taskID, no workerID
@@ -238,6 +262,7 @@ get_my_results(client_id)
 ```
 
 **Master RPC — Admin-Only** (used by admin.py):
+
 ```
 get_task_status(task_id)
 → { taskID, status, worker, result, client_id, task_type, task_data }
@@ -292,6 +317,7 @@ Config defaults:
 Stop a worker mid-session (`Ctrl+C` in its terminal), then submit a task via the client.
 
 Expected master output:
+
 ```
 [14:02:10] [Master] Task 101 submitted by Client_a3f8c2e1: factorial([10])
 [14:02:10] [Master] Assigning task 101 to Worker1
@@ -301,6 +327,7 @@ Expected master output:
 ```
 
 Client sees only:
+
 ```
   factorial(10) = 3628800
 ```
@@ -326,13 +353,13 @@ Fires 20 concurrent tasks and prints a results summary:
 
 ## Known Limitations
 
-| Limitation                  | Notes                                              |
-|-----------------------------|-------------------------------------------------------|
-| Synchronous task execution  | Master blocks per task; no async pipeline              |
-| No persistent storage       | Task table is in-memory; lost on master restart        |
-| No authentication           | Any client on the network can connect                  |
-| Local auto-scaling only     | Auto-scaler spawns workers on master's machine only    |
-| Registry is SPOF            | If registry crashes, new discovery stops (existing connections keep working) |
+| Limitation                 | Notes                                                                        |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| Synchronous task execution | Master blocks per task; no async pipeline                                    |
+| No persistent storage      | Task table is in-memory; lost on master restart                              |
+| No authentication          | Any client on the network can connect                                        |
+| Local auto-scaling only    | Auto-scaler spawns workers on master's machine only                          |
+| Registry is SPOF           | If registry crashes, new discovery stops (existing connections keep working) |
 
 ---
 
